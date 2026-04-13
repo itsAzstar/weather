@@ -303,8 +303,9 @@ def _warm_cache():
 
 
 if __name__ == "__main__":
-    import sys
+    import sys, os
     sys.stdout.reconfigure(encoding="utf-8", errors="replace") if hasattr(sys.stdout, "reconfigure") else None
+    port = int(os.environ.get("PORT", 8000))
     print("Weather Arb Dashboard")
-    print("   http://localhost:8000")
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
+    print(f"   http://localhost:{port}")
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
