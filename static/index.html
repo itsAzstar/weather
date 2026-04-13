@@ -1,0 +1,962 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Weather Arb Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<style>
+:root {
+  --bg:      #0f1117;
+  --surface: #1a1d27;
+  --border:  #2a2d3a;
+  --text:    #e2e8f0;
+  --dim:     #64748b;
+  --green:   #22c55e;
+  --yellow:  #eab308;
+  --red:     #ef4444;
+  --blue:    #3b82f6;
+  --purple:  #a855f7;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px;
+  min-height: 100vh;
+}
+
+/* ── Header ─────────────────────────────────────────────── */
+header {
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.logo { font-size: 18px; font-weight: 700; letter-spacing: -0.5px; }
+.logo span { color: var(--blue); }
+.header-meta { display: flex; gap: 16px; align-items: center; }
+.scan-time { color: var(--dim); font-size: 12px; }
+#refresh-btn {
+  background: var(--blue);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 14px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: opacity .15s;
+}
+#refresh-btn:hover { opacity: .85; }
+#refresh-btn:disabled { opacity: .5; cursor: default; }
+
+/* ── Latency Banner ──────────────────────────────────────── */
+#latency-banner {
+  display: none;
+  margin: 12px 24px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  border-left: 4px solid var(--yellow);
+  background: rgba(234,179,8,.1);
+  font-size: 13px;
+  font-weight: 600;
+}
+#latency-banner.green {
+  border-color: var(--green);
+  background: rgba(34,197,94,.08);
+}
+
+/* ── Model Status Bar ────────────────────────────────────── */
+#model-bar {
+  display: flex;
+  gap: 10px;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.model-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 4px 12px;
+  font-size: 12px;
+}
+.model-pill .dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+}
+.dot.fresh  { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.dot.normal { background: var(--dim); }
+.dot.stale  { background: var(--red); }
+
+/* ── Main Layout ─────────────────────────────────────────── */
+main { display: grid; grid-template-columns: 1fr 300px; gap: 20px; padding: 20px 24px; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+
+/* ── Section Titles ─────────────────────────────────────── */
+.section-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin-bottom: 12px;
+}
+
+/* ── Opportunity Card ────────────────────────────────────── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 12px;
+  position: relative;
+  transition: border-color .15s, transform .1s;
+  text-decoration: none;
+  color: inherit;
+  display: block;
+}
+.card:hover { border-color: var(--blue); transform: translateY(-1px); }
+.card.opportunity { border-left: 3px solid var(--green); }
+.card.no-edge     { border-left: 3px solid var(--border); opacity: .75; }
+
+/* Link icon on cards */
+.card-link-hint {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  font-size: 10px;
+  color: var(--dim);
+  opacity: 0;
+  transition: opacity .15s;
+}
+.card:hover .card-link-hint { opacity: 1; }
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.card-question {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  flex: 1;
+}
+.edge-badge {
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--green);
+  white-space: nowrap;
+}
+.edge-badge.negative { color: var(--red); }
+
+.card-meta { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.tag {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  color: var(--dim);
+}
+.tag.action-buy  { border-color: var(--green); color: var(--green); font-weight: 700; }
+.tag.action-sell { border-color: var(--red);   color: var(--red);   font-weight: 700; }
+.tag.conviction-high   { border-color: var(--purple); color: var(--purple); }
+.tag.conviction-medium { border-color: var(--yellow); color: var(--yellow); }
+.tag.conviction-low    { border-color: var(--dim);    color: var(--dim); }
+
+/* ── Probability Row ─────────────────────────────────────── */
+.prob-row {
+  display: grid;
+  grid-template-columns: repeat(3,1fr);
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.prob-cell {
+  background: rgba(255,255,255,.03);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  text-align: center;
+}
+.prob-label { font-size: 10px; color: var(--dim); margin-bottom: 4px; }
+.prob-value { font-size: 18px; font-weight: 700; }
+.prob-value.high  { color: var(--green); }
+.prob-value.mid   { color: var(--yellow); }
+.prob-value.low   { color: var(--red); }
+
+/* ── Model Consensus Row ─────────────────────────────────── */
+.consensus-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+.model-badge {
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.model-badge.yes { background: rgba(34,197,94,.15); color: var(--green); }
+.model-badge.no  { background: rgba(239,68,68,.15);  color: var(--red); }
+.model-badge.na  { background: rgba(100,116,139,.15); color: var(--dim); }
+
+/* ── Kelly Sizing ────────────────────────────────────────── */
+.kelly-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(59,130,246,.08);
+  border: 1px solid rgba(59,130,246,.25);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+.kelly-label { font-size: 12px; color: var(--dim); }
+.kelly-amount { font-size: 16px; font-weight: 800; color: var(--blue); }
+
+/* ── Spread Bar ──────────────────────────────────────────── */
+.spread-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--dim);
+}
+.spread-bar-track {
+  flex: 1;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.spread-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--yellow);
+}
+
+/* ── Sidebar ─────────────────────────────────────────────── */
+.sidebar { display: flex; flex-direction: column; gap: 16px; }
+.widget {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+}
+.widget-title { font-size: 12px; font-weight: 700; color: var(--dim); margin-bottom: 12px; letter-spacing: .5px; }
+
+/* Brier Score Widget */
+.brier-score {
+  font-size: 40px;
+  font-weight: 800;
+  text-align: center;
+  padding: 10px 0;
+}
+.brier-score.good    { color: var(--green); }
+.brier-score.ok      { color: var(--yellow); }
+.brier-score.bad     { color: var(--red); }
+.brier-label { text-align: center; font-size: 11px; color: var(--dim); }
+
+/* Stats row */
+.stat-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+.stat-row:last-child { border: none; }
+.stat-val { font-weight: 700; }
+
+/* Summary widget */
+.summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.summary-cell {
+  background: rgba(255,255,255,.03);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  text-align: center;
+}
+.summary-num { font-size: 24px; font-weight: 800; }
+.summary-num.green  { color: var(--green); }
+.summary-num.yellow { color: var(--yellow); }
+.summary-lbl { font-size: 10px; color: var(--dim); margin-top: 2px; }
+
+/* ── Empty States ────────────────────────────────────────── */
+.empty {
+  text-align: center;
+  padding: 40px;
+  color: var(--dim);
+}
+.empty-icon { font-size: 36px; margin-bottom: 12px; }
+
+/* ── Loading ─────────────────────────────────────────────── */
+.skeleton {
+  background: linear-gradient(90deg, var(--surface) 25%, var(--border) 50%, var(--surface) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 6px;
+  height: 100px;
+  margin-bottom: 12px;
+}
+@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+/* ── Section toggle buttons ──────────────────────────────── */
+.section-toggle {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--dim);
+  border-radius: 6px;
+  padding: 8px 16px;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.section-toggle:hover { border-color: var(--blue); color: var(--text); }
+
+/* ── Skip badge ──────────────────────────────────────────── */
+.skip-reason {
+  font-size: 11px;
+  color: var(--dim);
+  background: rgba(100,116,139,.1);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  margin-top: 6px;
+  display: inline-block;
+}
+
+/* ── History Section ─────────────────────────────────────── */
+#history-section {
+  grid-column: 1 / -1;
+  margin-top: 8px;
+}
+.history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.history-rate-badge {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 6px 16px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.history-rate-badge .rate-success { color: var(--green); }
+.history-rate-badge .rate-fail    { color: var(--red); }
+.history-rate-badge .rate-sep     { color: var(--dim); margin: 0 4px; }
+
+.history-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+@media (max-width: 700px) { .history-cols { grid-template-columns: 1fr; } }
+
+.history-col-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .5px;
+  padding: 8px 12px;
+  border-radius: 6px 6px 0 0;
+  border: 1px solid var(--border);
+  border-bottom: none;
+}
+.history-col-title.correct {
+  background: rgba(34,197,94,.08);
+  border-color: var(--green);
+  color: var(--green);
+}
+.history-col-title.wrong {
+  background: rgba(239,68,68,.08);
+  border-color: var(--red);
+  color: var(--red);
+}
+.history-col-body {
+  border: 1px solid var(--border);
+  border-radius: 0 0 6px 6px;
+  overflow: hidden;
+  max-height: 440px;
+  overflow-y: auto;
+}
+.history-col-body.correct { border-color: var(--green); }
+.history-col-body.wrong   { border-color: var(--red); }
+
+.history-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.history-row:last-child { border-bottom: none; }
+.history-row:hover { background: rgba(255,255,255,.02); }
+.history-row-q { font-size: 12px; font-weight: 500; line-height: 1.35; }
+.history-row-meta { display: flex; gap: 8px; color: var(--dim); font-size: 11px; flex-wrap: wrap; margin-top: 2px; }
+.history-row-edge { font-weight: 700; }
+.history-row-edge.pos { color: var(--green); }
+.history-row-edge.neg { color: var(--red); }
+.history-empty { padding: 24px; text-align: center; color: var(--dim); font-size: 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">🌤 Weather <span>Arb</span></div>
+  <div class="header-meta">
+    <span class="scan-time" id="scan-time">—</span>
+    <button id="refresh-btn" onclick="refresh()">⟳ 重新掃描</button>
+  </div>
+</header>
+
+<div id="latency-banner"></div>
+
+<div id="model-bar">
+  <div class="model-pill"><span class="dot normal" id="dot-gfs"></span><span id="status-gfs">GFS —</span></div>
+  <div class="model-pill"><span class="dot normal" id="dot-ecmwf"></span><span id="status-ecmwf">ECMWF —</span></div>
+  <div class="model-pill"><span class="dot normal" id="dot-icon"></span><span id="status-icon">ICON —</span></div>
+</div>
+
+<main>
+  <!-- ── Left: Opportunities ── -->
+  <div>
+    <div class="section-title">套利機會</div>
+    <div id="opportunities-list"><div class="skeleton"></div><div class="skeleton"></div></div>
+
+    <div id="no-edge-wrap" style="margin-top:16px">
+      <button class="section-toggle" onclick="toggleSection('no-edge')">
+        <span id="no-edge-arrow">▾</span> 無顯著 Edge 的市場 (<span id="no-edge-count">0</span>)
+      </button>
+      <div id="no-edge-section">
+        <div class="section-title">模型 vs 市場差距 &lt; 5%</div>
+        <div id="no-edge-list"></div>
+      </div>
+    </div>
+
+    <div id="skipped-wrap" style="margin-top:8px;display:none">
+      <button class="section-toggle" onclick="toggleSection('skipped')">
+        <span id="skipped-arrow">▸</span> 跳過的市場 (<span id="skipped-count">0</span>)
+      </button>
+      <div id="skipped-section" style="display:none">
+        <div class="section-title">過期 / 太遠 / 無法解析</div>
+        <div id="skipped-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Right: Sidebar ── -->
+  <div class="sidebar">
+
+    <!-- 掃描摘要 -->
+    <div class="widget">
+      <div class="widget-title">今日掃描摘要</div>
+      <div class="summary-grid">
+        <div class="summary-cell">
+          <div class="summary-num green" id="sum-opp">—</div>
+          <div class="summary-lbl">套利機會</div>
+        </div>
+        <div class="summary-cell">
+          <div class="summary-num yellow" id="sum-total">—</div>
+          <div class="summary-lbl">市場總數</div>
+        </div>
+        <div class="summary-cell">
+          <div class="summary-num" style="color:var(--dim)" id="sum-noedge">—</div>
+          <div class="summary-lbl">無顯著Edge</div>
+        </div>
+        <div class="summary-cell">
+          <div class="summary-num" style="color:var(--dim)" id="sum-skipped">—</div>
+          <div class="summary-lbl">已跳過</div>
+        </div>
+      </div>
+      <div id="data-source-tag" style="margin-top:8px;font-size:11px;color:var(--dim);text-align:center"></div>
+    </div>
+
+    <!-- Brier Score -->
+    <div class="widget">
+      <div class="widget-title">模型校準 (30天)</div>
+      <div class="brier-score" id="brier-score">—</div>
+      <div class="brier-label" id="brier-label">尚無結算記錄</div>
+      <div style="margin-top:12px">
+        <div class="stat-row"><span>已結算預測</span><span class="stat-val" id="brier-total">—</span></div>
+        <div class="stat-row"><span>勝率</span><span class="stat-val" id="brier-wr">—</span></div>
+        <div class="stat-row"><span>評級</span><span class="stat-val" id="brier-rating">—</span></div>
+      </div>
+    </div>
+
+    <!-- 說明 -->
+    <div class="widget">
+      <div class="widget-title">使用說明</div>
+      <div style="font-size:12px;color:var(--dim);line-height:1.6">
+        <p><b style="color:var(--text)">Edge %</b> = 模型概率 − 市場價格</p>
+        <p style="margin-top:6px"><b style="color:var(--text)">🌡 氣溫市場</b> = Polymarket 每日最高氣溫，每個城市有 5 個溫度區間可下注</p>
+        <p style="margin-top:6px"><b style="color:var(--text)">共識</b> = GFS/ECMWF/ICON 3模型方向一致性</p>
+        <p style="margin-top:6px"><b style="color:var(--text)">建議注額</b> = Kelly × 共識强度</p>
+        <p style="margin-top:6px"><b style="color:var(--green)">✓ 真實市場</b> = 可直接在 Polymarket 下注</p>
+        <p style="margin-top:6px">每 30 分鐘自動更新 (對齊 GFS 週期)</p>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<!-- ── History Section (full-width below main) ── -->
+<div style="padding: 0 24px 32px">
+  <div id="history-section">
+    <button class="section-toggle" onclick="toggleHistory()" id="history-toggle-btn">
+      <span id="history-arrow">▸</span> 預判歷史紀錄 (正確 vs 失敗)
+    </button>
+    <div id="history-panel" style="display:none">
+      <div class="history-header">
+        <div class="section-title" style="margin:0">過去 90 天已結算預測</div>
+        <div class="history-rate-badge" id="history-rate-badge">
+          <span>載入中…</span>
+        </div>
+      </div>
+      <div class="history-cols">
+        <div>
+          <div class="history-col-title correct">✅ 正確預判 (<span id="hist-correct-count">0</span>)</div>
+          <div class="history-col-body correct" id="hist-correct-list">
+            <div class="history-empty">載入中…</div>
+          </div>
+        </div>
+        <div>
+          <div class="history-col-title wrong">❌ 失敗預判 (<span id="hist-wrong-count">0</span>)</div>
+          <div class="history-col-body wrong" id="hist-wrong-list">
+            <div class="history-empty">載入中…</div>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:10px;font-size:11px;color:var(--dim);text-align:center">
+        判斷邏輯：BUY YES 且最終結算 YES → 正確；BUY NO 且結算 NO → 正確。市場尚未結算的預測不計入。
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ─────────────────────────────────────────────────
+let sectionState = { 'no-edge': true, 'skipped': false };
+let autoRefreshTimer = null;
+
+// ── Utilities ──────────────────────────────────────────────
+function pct(v) {
+  if (v == null) return '—';
+  return (v * 100).toFixed(1) + '%';
+}
+function probClass(p) {
+  if (p == null) return '';
+  if (p >= 0.65) return 'high';
+  if (p >= 0.40) return 'mid';
+  return 'low';
+}
+function timeAgo(isoStr) {
+  if (!isoStr) return '—';
+  const d = new Date(isoStr);
+  const s = Math.floor((Date.now() - d) / 1000);
+  if (s < 60)  return s + 's 前';
+  if (s < 3600) return Math.floor(s/60) + 'min 前';
+  return Math.floor(s/3600) + 'h 前';
+}
+
+// ── Latency ────────────────────────────────────────────────
+async function loadLatency() {
+  try {
+    const r = await fetch('/api/latency');
+    const d = await r.json();
+
+    const banner = document.getElementById('latency-banner');
+    if (d.latency_alert) {
+      banner.style.display = 'block';
+      banner.className = '';
+      banner.textContent = '⚡ Latency 套利窗口！' + d.alert_models.join(' + ') + ' 剛更新 — 市場可能尚未重新定價！';
+    } else {
+      banner.style.display = 'none';
+    }
+
+    for (const m of d.models || []) {
+      const nameL = m.name.toLowerCase();
+      const dot    = document.getElementById('dot-' + nameL);
+      const status = document.getElementById('status-' + nameL);
+      if (!dot) continue;
+      dot.className = 'dot ' + (m.is_fresh ? 'fresh' : m.is_stale ? 'stale' : 'normal');
+      const ago = m.hours_ago != null ? m.hours_ago.toFixed(1) + 'h 前' : '—';
+      status.textContent = m.name + ' ' + ago;
+    }
+  } catch(e) {
+    console.warn('Latency load failed', e);
+  }
+}
+
+// ── History / Brier ────────────────────────────────────────
+async function loadHistory() {
+  try {
+    const r = await fetch('/api/history?days=30');
+    const d = await r.json();
+    const b = d.brier_score;
+    const el = document.getElementById('brier-score');
+    if (b) {
+      const score = b.brier_consensus ?? b.brier_model;
+      el.textContent = score.toFixed(3);
+      el.className   = 'brier-score ' + (score < 0.10 ? 'good' : score < 0.20 ? 'ok' : 'bad');
+      document.getElementById('brier-label').textContent = `Brier Score (越低越好，<0.10 優秀)`;
+      document.getElementById('brier-total').textContent = b.total_resolved;
+      document.getElementById('brier-wr').textContent    = (b.win_rate * 100).toFixed(0) + '%';
+      document.getElementById('brier-rating').textContent = b.rating;
+    }
+  } catch(e) {}
+}
+
+// ── Card Builder ───────────────────────────────────────────
+function buildCard(r, isOpp) {
+  const edge   = r.edge || 0;
+  const cons   = r.consensus || {};
+  const gfs_p  = cons.gfs;
+  const ecmwf_p = cons.ecmwf;
+  const icon_p  = cons.icon;
+
+  const edgeSign = edge >= 0 ? '+' : '';
+  const edgeClass = edge >= 0 ? '' : 'negative';
+  const cardClass = isOpp ? 'opportunity' : 'no-edge';
+
+  const actionTag = r.action === 'BUY YES'
+    ? '<span class="tag action-buy">BUY YES</span>'
+    : r.action === 'BUY NO'
+    ? '<span class="tag action-sell">BUY NO</span>'
+    : '<span class="tag">' + (r.action || 'SKIP') + '</span>';
+
+  const convClass = 'conviction-' + (r.conviction || 'low');
+  const convText  = {high:'高共識 ★★★', medium:'中共識 ★★', low:'低共識 ★'}[r.conviction] || '—';
+
+  function modelBadge(name, prob) {
+    if (prob == null) return `<span class="model-badge na">${name} N/A</span>`;
+    const cls = prob > 0.5 ? 'yes' : 'no';
+    return `<span class="model-badge ${cls}">${name} ${pct(prob)}</span>`;
+  }
+
+  const spread = cons.spread || 0;
+  const spreadPct = Math.round(spread * 100);
+  const spreadWidth = Math.min(spreadPct * 3, 100);
+
+  const kellyLine = (isOpp && r.kelly_bet)
+    ? `<div class="kelly-row">
+         <span class="kelly-label">建議注額 (Kelly × 共識)</span>
+         <span class="kelly-amount">$${r.kelly_bet.toFixed(2)}</span>
+       </div>`
+    : '';
+
+  const mktYes = r.market_price_yes;
+  const modYes = r.consensus_prob || r.model_probability;
+
+  // Show model prob even if no consensus yet
+  const modDisplay = modYes != null ? pct(modYes) : (r.model_probability != null ? pct(r.model_probability) + '*' : '—');
+  const modClass   = modYes != null ? probClass(modYes) : probClass(r.model_probability);
+
+  const isMock   = r.source === 'mock';
+  const isTempBucket = r.market_subtype === 'temperature_bucket';
+  const linkAttr = r.url ? `href="${r.url}" target="_blank" rel="noopener"` : '';
+  const tag      = r.url ? 'a' : 'div';
+  const linkHint = r.url ? '↗ 前往投注' : (isMock ? '📊 Demo 數據' : '');
+
+  // Temperature bucket badge + forecast line
+  const tempBadge = (isTempBucket && r.temp_display)
+    ? `<span class="tag" style="color:var(--blue);border-color:var(--blue);font-weight:700">🌡 ${r.temp_display}</span>`
+    : '';
+  const fcMaxC = r.weather_temp_max_c;
+  const fcMaxF = r.weather_temp_max_f;
+  const forecastLine = (isTempBucket && fcMaxC != null)
+    ? `<div style="font-size:11px;color:var(--dim);margin-top:8px;padding:6px 8px;background:rgba(59,130,246,.05);border-radius:4px;border:1px solid var(--border)">
+         🌤 氣象預測最高溫：<b style="color:var(--text)">${fcMaxC.toFixed(1)}°C${fcMaxF ? ' / ' + fcMaxF.toFixed(1) + '°F' : ''}</b>
+       </div>`
+    : '';
+
+  // Location tag: for temp bucket use location_hint directly
+  const locationTag = r.location_hint || r.parsed?.location || '—';
+  const dateTag     = r.parsed?.target_date || (r.end_date ? r.end_date.slice(0,10) : '—');
+
+  return `
+<${tag} class="card ${cardClass}" ${linkAttr}>
+  ${linkHint ? `<span class="card-link-hint">${linkHint}</span>` : ''}
+  <div class="card-header">
+    <div class="card-question">${r.question || '—'}</div>
+    <div class="edge-badge ${edgeClass}">${r.edge != null ? edgeSign + pct(edge) : '—'}</div>
+  </div>
+  <div class="card-meta">
+    ${actionTag}
+    ${tempBadge}
+    ${r.conviction ? `<span class="tag ${convClass}">${convText}</span>` : ''}
+    <span class="tag">📍 ${locationTag}</span>
+    <span class="tag">📅 ${dateTag}</span>
+    ${isTempBucket ? '<span class="tag" style="color:var(--green);border-color:var(--green)">✓ 真實市場</span>' : isMock ? '<span class="tag" style="color:var(--yellow);border-color:var(--yellow)">Demo</span>' : ''}
+  </div>
+  <div class="prob-row">
+    <div class="prob-cell">
+      <div class="prob-label">市場價格</div>
+      <div class="prob-value ${probClass(mktYes)}">${pct(mktYes)}</div>
+    </div>
+    <div class="prob-cell">
+      <div class="prob-label">模型概率</div>
+      <div class="prob-value ${modClass}">${modDisplay}</div>
+    </div>
+    <div class="prob-cell">
+      <div class="prob-label">3模型合意</div>
+      <div class="prob-value ${probClass((cons.models_agree||0)/3)}">${cons.models_agree != null ? cons.models_agree + '/3' : (isTempBucket ? '—*' : '—')}</div>
+    </div>
+  </div>
+  ${forecastLine}
+  ${cons && (gfs_p != null || ecmwf_p != null || icon_p != null) ? `
+  <div class="consensus-row">
+    ${modelBadge('GFS', gfs_p)}
+    ${modelBadge('ECMWF', ecmwf_p)}
+    ${modelBadge('ICON', icon_p)}
+    <span style="color:var(--dim);margin-left:auto">Spread ${spreadPct}%</span>
+  </div>
+  <div class="spread-row">
+    <span>不確定度</span>
+    <div class="spread-bar-track"><div class="spread-bar-fill" style="width:${spreadWidth}%"></div></div>
+    <span>${spread < 0.10 ? '低' : spread < 0.20 ? '中' : '高'}</span>
+  </div>` : ''}
+  ${kellyLine}
+</${tag}>`;
+}
+
+// ── History ────────────────────────────────────────────────
+let historyLoaded = false;
+
+function toggleHistory() {
+  const panel = document.getElementById('history-panel');
+  const arrow = document.getElementById('history-arrow');
+  const open  = panel.style.display === 'none';
+  panel.style.display = open ? 'block' : 'none';
+  arrow.textContent   = open ? '▾' : '▸';
+  if (open && !historyLoaded) {
+    loadHistoryResolved();
+  }
+}
+
+function buildHistoryRow(r) {
+  const edge     = r.edge ?? r.model_prob;
+  const edgeSign = edge != null ? (edge >= 0 ? '+' : '') : '';
+  const edgeStr  = edge != null ? `${edgeSign}${(edge * 100).toFixed(1)}%` : '—';
+  const edgeClass = edge != null ? (edge >= 0 ? 'pos' : 'neg') : '';
+  const dateStr  = (r.target_date || r.predicted_at || '').slice(0, 10);
+  const action   = r.action || '—';
+  const conv     = r.conviction ? `· ${r.conviction} 共識` : '';
+  const resolvedStr = r.resolved_at ? new Date(r.resolved_at).toLocaleDateString('zh-TW') : '—';
+  return `
+<div class="history-row">
+  <div class="history-row-q">${r.question || r.location || '—'}</div>
+  <div class="history-row-meta">
+    <span>${action}</span>
+    <span class="history-row-edge ${edgeClass}">Edge ${edgeStr}</span>
+    ${r.location ? `<span>📍 ${r.location}</span>` : ''}
+    <span>📅 ${dateStr}</span>
+    <span>結算 ${resolvedStr}</span>
+    ${conv ? `<span>${conv}</span>` : ''}
+  </div>
+</div>`;
+}
+
+async function loadHistoryResolved() {
+  try {
+    const r = await fetch('/api/history/resolved?days=90');
+    const d = await r.json();
+
+    historyLoaded = true;
+
+    const total   = d.total || 0;
+    const success = d.success_count || 0;
+    const fail    = d.failure_count || 0;
+    const sr      = d.success_rate;
+    const fr      = d.failure_rate;
+
+    // Rate badge
+    const badge = document.getElementById('history-rate-badge');
+    if (total === 0) {
+      badge.innerHTML = '<span style="color:var(--dim)">尚無結算記錄</span>';
+    } else {
+      const srPct = sr != null ? (sr * 100).toFixed(1) : '—';
+      const frPct = fr != null ? (fr * 100).toFixed(1) : '—';
+      badge.innerHTML = `
+        <span class="rate-success">✅ 正確 ${success} 筆 (${srPct}%)</span>
+        <span class="rate-sep">vs</span>
+        <span class="rate-fail">❌ 失敗 ${fail} 筆 (${frPct}%)</span>
+        <span style="color:var(--dim);font-size:11px;font-weight:400">共 ${total} 筆</span>`;
+    }
+
+    // Correct column
+    const correctList = document.getElementById('hist-correct-list');
+    document.getElementById('hist-correct-count').textContent = success;
+    correctList.innerHTML = success === 0
+      ? '<div class="history-empty">尚無正確預判紀錄</div>'
+      : (d.correct || []).map(buildHistoryRow).join('');
+
+    // Wrong column
+    const wrongList = document.getElementById('hist-wrong-list');
+    document.getElementById('hist-wrong-count').textContent = fail;
+    wrongList.innerHTML = fail === 0
+      ? '<div class="history-empty">尚無失敗預判紀錄</div>'
+      : (d.wrong || []).map(buildHistoryRow).join('');
+
+  } catch(e) {
+    console.warn('History resolved load failed', e);
+    document.getElementById('hist-correct-list').innerHTML =
+      `<div class="history-empty">載入失敗：${e.message}</div>`;
+    document.getElementById('hist-wrong-list').innerHTML =
+      `<div class="history-empty">載入失敗：${e.message}</div>`;
+  }
+}
+
+// ── Load Opportunities ─────────────────────────────────────
+async function loadOpportunities(forceRefresh = false) {
+  const btn = document.getElementById('refresh-btn');
+  btn.disabled = true;
+  btn.textContent = '掃描中…';
+
+  try {
+    const url = forceRefresh ? '/api/refresh' : '/api/opportunities';
+    const method = forceRefresh ? 'POST' : 'GET';
+    const r = await fetch(url, { method });
+    const d = await r.json();
+
+    // Scan time
+    if (d.scanned_at) {
+      const t = new Date(d.scanned_at);
+      document.getElementById('scan-time').textContent =
+        '掃描: ' + t.toLocaleTimeString('zh-TW') + (d.cached ? ' (快取)' : '');
+    }
+
+    // Summary
+    const summary = d.summary || {};
+    document.getElementById('sum-opp').textContent      = summary.opportunities ?? '—';
+    document.getElementById('sum-total').textContent    = summary.total ?? '—';
+    document.getElementById('sum-noedge').textContent   = summary.no_edge ?? '—';
+    document.getElementById('sum-skipped').textContent  = summary.skipped ?? '—';
+
+    // Data source badge
+    const allMarkets = [...(d.opportunities||[]),...(d.no_edge||[]),...(d.skipped||[])];
+    const realCount = allMarkets.filter(r => r.source !== 'mock').length;
+    const tempCount = allMarkets.filter(r => r.market_subtype === 'temperature_bucket').length;
+    const srcEl = document.getElementById('data-source-tag');
+    if (realCount === 0) {
+      srcEl.textContent = '⚠ Mock 數據 (無真實天氣市場)';
+      srcEl.style.color = 'var(--yellow)';
+    } else {
+      srcEl.textContent = `✓ 真實市場 ${realCount} 個 (含 ${tempCount} 個氣溫市場)`;
+      srcEl.style.color = 'var(--green)';
+    }
+
+    // Opportunities
+    const oppList = document.getElementById('opportunities-list');
+    if (!d.opportunities || d.opportunities.length === 0) {
+      const noEdgeCount = (d.no_edge || []).length;
+      const hint = noEdgeCount > 0
+        ? `掃到 ${noEdgeCount} 個市場，但模型 vs 市場差距 &lt; ${((d.edge_threshold||0.05)*100).toFixed(0)}%，往下查看 ↓`
+        : '找不到可評估的市場';
+      oppList.innerHTML = `
+        <div class="empty">
+          <div class="empty-icon">📊</div>
+          <div>無超過 ${((d.edge_threshold||0.05)*100).toFixed(0)}% Edge 的機會</div>
+          <div style="margin-top:8px;font-size:12px;color:var(--yellow)">${hint}</div>
+          <div id="next-refresh" style="margin-top:6px;font-size:11px;color:var(--dim)">下次自動掃描：60s 後</div>
+        </div>`;
+    } else {
+      oppList.innerHTML = d.opportunities.map(r => buildCard(r, true)).join('');
+    }
+
+    // No-edge (default expanded)
+    const neCount = (d.no_edge || []).length;
+    document.getElementById('no-edge-count').textContent = neCount;
+    const neList = document.getElementById('no-edge-list');
+    neList.innerHTML = (d.no_edge || []).map(r => buildCard(r, false)).join('');
+    // Keep no-edge section visible
+    document.getElementById('no-edge-section').style.display = 'block';
+    document.getElementById('no-edge-arrow').textContent = '▾';
+
+    // Skipped markets
+    const skipped = d.skipped || [];
+    document.getElementById('skipped-count').textContent = skipped.length;
+    if (skipped.length > 0) {
+      document.getElementById('skipped-wrap').style.display = 'block';
+      document.getElementById('skipped-list').innerHTML = skipped.map(r => {
+        const reason = r.skip_reason || r.action || 'Unknown';
+        return `<div class="card no-edge" style="opacity:.6">
+          <div class="card-header">
+            <div class="card-question" style="font-size:12px">${r.question || '—'}</div>
+          </div>
+          <div><span class="skip-reason">⊘ ${reason}</span></div>
+        </div>`;
+      }).join('');
+    }
+
+  } catch(e) {
+    document.getElementById('opportunities-list').innerHTML =
+      `<div class="empty"><div class="empty-icon">⚠️</div><div>載入失敗：${e.message}</div></div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⟳ 重新掃描';
+  }
+}
+
+function toggleSection(id) {
+  sectionState[id] = !sectionState[id];
+  const open = sectionState[id];
+  document.getElementById(id + '-section').style.display = open ? 'block' : 'none';
+  document.getElementById(id + '-arrow').textContent = open ? '▾' : '▸';
+}
+
+async function refresh() {
+  await loadOpportunities(true);
+  await Promise.all([loadLatency(), loadHistory()]);
+}
+
+// ── Auto-refresh every 1 min ───────────────────────────────
+const AUTO_REFRESH_MS = 60 * 1000;  // 1 minute
+let countdownTimer = null;
+
+function scheduleAutoRefresh() {
+  if (autoRefreshTimer) clearTimeout(autoRefreshTimer);
+  if (countdownTimer)   clearInterval(countdownTimer);
+
+  let remaining = AUTO_REFRESH_MS / 1000;
+  countdownTimer = setInterval(() => {
+    remaining--;
+    const el = document.getElementById('next-refresh');
+    if (el) el.textContent = `下次自動掃描：${remaining}s 後`;
+    if (remaining <= 0) clearInterval(countdownTimer);
+  }, 1000);
+
+  autoRefreshTimer = setTimeout(async () => {
+    await loadOpportunities(false);
+    await loadLatency();
+    scheduleAutoRefresh();
+  }, AUTO_REFRESH_MS);
+}
+
+// ── Init ───────────────────────────────────────────────────
+(async function init() {
+  await Promise.all([
+    loadOpportunities(false),
+    loadLatency(),
+    loadHistory(),
+  ]);
+  scheduleAutoRefresh();
+})();
+</script>
+</body>
+</html>
