@@ -41,7 +41,11 @@ def init_db():
                 action          TEXT,
                 predicted_at    TEXT NOT NULL,
                 outcome         INTEGER,    -- 1=YES, 0=NO, NULL=pending
-                resolved_at     TEXT
+                resolved_at     TEXT,
+                temp_bucket_json TEXT,      -- JSON: {lo_c, hi_c, direction}
+                market_url      TEXT,
+                market_subtype  TEXT,
+                temp_display    TEXT
             )
         """)
         conn.execute("""
@@ -50,6 +54,17 @@ def init_db():
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_target_date ON predictions(target_date)
         """)
+        # Migrate: add new columns if they don't exist (idempotent)
+        for col, coltype in [
+            ("temp_bucket_json", "TEXT"),
+            ("market_url",       "TEXT"),
+            ("market_subtype",   "TEXT"),
+            ("temp_display",     "TEXT"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE predictions ADD COLUMN {col} {coltype}")
+            except Exception:
+                pass  # column already exists
 
 
 def log_prediction(result: dict):
@@ -68,16 +83,19 @@ def log_prediction(result: dict):
             return
 
         parsed = result.get("parsed", {})
+        bucket = result.get("temp_bucket")
+        bucket_json = json.dumps(bucket) if bucket else None
         conn.execute("""
             INSERT INTO predictions
                 (condition_id, question, location, event_type, target_date,
                  market_price, model_prob, consensus_prob, conviction, models_agree,
-                 edge, action, predicted_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 edge, action, predicted_at,
+                 temp_bucket_json, market_url, market_subtype, temp_display)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             condition_id,
             result.get("question", ""),
-            parsed.get("location", ""),
+            result.get("location_hint") or parsed.get("location", ""),
             parsed.get("event_type", ""),
             parsed.get("target_date", ""),
             result.get("market_price_yes"),
@@ -88,6 +106,10 @@ def log_prediction(result: dict):
             result.get("edge"),
             result.get("action", ""),
             datetime.now(timezone.utc).isoformat(),
+            bucket_json,
+            result.get("url"),
+            result.get("market_subtype"),
+            result.get("temp_display"),
         ))
 
 
@@ -165,6 +187,144 @@ def get_recent_predictions(limit: int = 20) -> list[dict]:
             LIMIT ?
         """, (limit,)).fetchall()
     return [dict(r) for r in rows]
+
+
+def auto_resolve_past_markets():
+    """
+    Auto-resolve temperature bucket predictions where target_date < today.
+    Uses Open-Meteo historical archive to get actual max temperature,
+    then compares to stored temp_bucket bounds to determine YES/NO.
+    Returns number of markets newly resolved.
+    """
+    import requests
+    from fetcher_weather import resolve_location
+
+    init_db()
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+
+    with _connect() as conn:
+        rows = conn.execute("""
+            SELECT id, condition_id, location, target_date, temp_bucket_json, action
+            FROM predictions
+            WHERE outcome IS NULL
+              AND market_subtype = 'temperature_bucket'
+              AND temp_bucket_json IS NOT NULL
+              AND target_date <= ?
+            LIMIT 100
+        """, (yesterday,)).fetchall()
+
+    resolved = 0
+    for r in rows:
+        try:
+            target_d = date.fromisoformat(r["target_date"])
+            bucket = json.loads(r["temp_bucket_json"] or "{}")
+            if not bucket:
+                continue
+
+            coords = resolve_location(r["location"])
+            if not coords:
+                continue
+            lat, lon = coords
+
+            # Fetch actual historical max temperature
+            resp = requests.get(
+                "https://archive-api.open-meteo.com/v1/archive",
+                params={
+                    "latitude":   lat,
+                    "longitude":  lon,
+                    "start_date": target_d.isoformat(),
+                    "end_date":   target_d.isoformat(),
+                    "daily":      "temperature_2m_max",
+                    "timezone":   "UTC",
+                },
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                continue
+
+            data = resp.json()
+            temps = (data.get("daily") or {}).get("temperature_2m_max") or []
+            if not temps:
+                continue
+            actual_c = temps[0]
+            if actual_c is None:
+                continue
+
+            lo_c = bucket.get("lo_c")
+            hi_c = bucket.get("hi_c")
+
+            if lo_c is not None and hi_c is not None:
+                yes_won = lo_c <= actual_c <= hi_c
+            elif lo_c is not None:   # "X or higher"
+                yes_won = actual_c >= lo_c
+            elif hi_c is not None:   # "X or below"
+                yes_won = actual_c <= hi_c
+            else:
+                continue
+
+            record_outcome(r["condition_id"], yes_won)
+            resolved += 1
+
+        except Exception:
+            continue
+
+    return resolved
+
+
+def get_all_predictions(days: int = 90, limit: int = 200) -> dict:
+    """
+    返回所有預測記錄（含待結算），分成三組：
+      correct  — BUY YES + outcome=1，或 BUY NO + outcome=0
+      wrong    — 結算了但預測錯誤
+      pending  — outcome IS NULL（尚未結算）
+    """
+    init_db()
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    with _connect() as conn:
+        rows = conn.execute("""
+            SELECT condition_id, question, location, target_date,
+                   market_price, model_prob, consensus_prob, edge, action,
+                   conviction, predicted_at, outcome, resolved_at,
+                   temp_bucket_json, market_url, market_subtype, temp_display
+            FROM predictions
+            WHERE predicted_at >= ?
+            ORDER BY predicted_at DESC
+            LIMIT ?
+        """, (since, limit)).fetchall()
+
+    correct, wrong, pending = [], [], []
+    for r in rows:
+        d = dict(r)
+        action  = d.get("action", "")
+        outcome = d.get("outcome")
+
+        if outcome is None:
+            d["verdict"] = "pending"
+            pending.append(d)
+        elif (action == "BUY YES" and outcome == 1) or (action == "BUY NO" and outcome == 0):
+            d["verdict"] = "correct"
+            correct.append(d)
+        else:
+            d["verdict"] = "wrong"
+            wrong.append(d)
+
+    total_settled = len(correct) + len(wrong)
+    success_rate = round(len(correct) / total_settled, 4) if total_settled > 0 else None
+    failure_rate = round(len(wrong)   / total_settled, 4) if total_settled > 0 else None
+
+    return {
+        "correct":       correct,
+        "wrong":         wrong,
+        "pending":       pending,
+        "total_settled": total_settled,
+        "total":         len(correct) + len(wrong) + len(pending),
+        "success_count": len(correct),
+        "failure_count": len(wrong),
+        "pending_count": len(pending),
+        "success_rate":  success_rate,
+        "failure_rate":  failure_rate,
+        "days_window":   days,
+    }
 
 
 def get_resolved_split(days: int = 90) -> dict:

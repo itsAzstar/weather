@@ -334,39 +334,42 @@ main { display: grid; grid-template-columns: 1fr 300px; gap: 20px; padding: 20px
 }
 
 /* ── History Section ─────────────────────────────────────── */
-#history-section {
-  grid-column: 1 / -1;
-  margin-top: 8px;
-}
-.history-header {
+.history-rate-strip {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 14px;
+  gap: 12px;
   flex-wrap: wrap;
-  gap: 10px;
+  margin-bottom: 16px;
 }
-.history-rate-badge {
+.history-stat-pill {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 10px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 20px;
-  padding: 6px 16px;
-  font-size: 13px;
-  font-weight: 700;
+  border-radius: 10px;
+  padding: 10px 20px;
+  min-width: 100px;
 }
-.history-rate-badge .rate-success { color: var(--green); }
-.history-rate-badge .rate-fail    { color: var(--red); }
-.history-rate-badge .rate-sep     { color: var(--dim); margin: 0 4px; }
+.history-stat-pill .pill-num  { font-size: 26px; font-weight: 800; }
+.history-stat-pill .pill-pct  { font-size: 13px; font-weight: 700; }
+.history-stat-pill .pill-lbl  { font-size: 10px; color: var(--dim); margin-top: 2px; }
+.history-stat-pill.correct { border-color: var(--green); }
+.history-stat-pill.correct .pill-num { color: var(--green); }
+.history-stat-pill.correct .pill-pct { color: var(--green); }
+.history-stat-pill.wrong   { border-color: var(--red); }
+.history-stat-pill.wrong   .pill-num { color: var(--red); }
+.history-stat-pill.wrong   .pill-pct { color: var(--red); }
+.history-stat-pill.pending { border-color: var(--yellow); }
+.history-stat-pill.pending .pill-num { color: var(--yellow); }
 
 .history-cols {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 14px;
 }
-@media (max-width: 700px) { .history-cols { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .history-cols { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 600px) { .history-cols { grid-template-columns: 1fr; } }
 
 .history-col-title {
   font-size: 12px;
@@ -377,25 +380,20 @@ main { display: grid; grid-template-columns: 1fr 300px; gap: 20px; padding: 20px
   border: 1px solid var(--border);
   border-bottom: none;
 }
-.history-col-title.correct {
-  background: rgba(34,197,94,.08);
-  border-color: var(--green);
-  color: var(--green);
-}
-.history-col-title.wrong {
-  background: rgba(239,68,68,.08);
-  border-color: var(--red);
-  color: var(--red);
-}
+.history-col-title.correct { background: rgba(34,197,94,.08); border-color: var(--green); color: var(--green); }
+.history-col-title.wrong   { background: rgba(239,68,68,.08);  border-color: var(--red);   color: var(--red); }
+.history-col-title.pending { background: rgba(234,179,8,.08);  border-color: var(--yellow); color: var(--yellow); }
+
 .history-col-body {
   border: 1px solid var(--border);
   border-radius: 0 0 6px 6px;
   overflow: hidden;
-  max-height: 440px;
+  max-height: 480px;
   overflow-y: auto;
 }
 .history-col-body.correct { border-color: var(--green); }
 .history-col-body.wrong   { border-color: var(--red); }
+.history-col-body.pending { border-color: var(--yellow); }
 
 .history-row {
   display: flex;
@@ -404,14 +402,20 @@ main { display: grid; grid-template-columns: 1fr 300px; gap: 20px; padding: 20px
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
   font-size: 12px;
+  text-decoration: none;
+  color: inherit;
+  display: block;
+  transition: background .1s;
 }
 .history-row:last-child { border-bottom: none; }
-.history-row:hover { background: rgba(255,255,255,.02); }
+.history-row:hover { background: rgba(255,255,255,.03); }
 .history-row-q { font-size: 12px; font-weight: 500; line-height: 1.35; }
-.history-row-meta { display: flex; gap: 8px; color: var(--dim); font-size: 11px; flex-wrap: wrap; margin-top: 2px; }
+.history-row-meta { display: flex; gap: 8px; color: var(--dim); font-size: 11px; flex-wrap: wrap; margin-top: 4px; }
 .history-row-edge { font-weight: 700; }
 .history-row-edge.pos { color: var(--green); }
 .history-row-edge.neg { color: var(--red); }
+.hist-action-buy  { color: var(--green); font-weight: 700; }
+.hist-action-sell { color: var(--red);   font-weight: 700; }
 .history-empty { padding: 24px; text-align: center; color: var(--dim); font-size: 12px; }
 </style>
 </head>
@@ -516,35 +520,59 @@ main { display: grid; grid-template-columns: 1fr 300px; gap: 20px; padding: 20px
 </main>
 
 <!-- ── History Section (full-width below main) ── -->
-<div style="padding: 0 24px 32px">
-  <div id="history-section">
-    <button class="section-toggle" onclick="toggleHistory()" id="history-toggle-btn">
-      <span id="history-arrow">▸</span> 預判歷史紀錄 (正確 vs 失敗)
-    </button>
-    <div id="history-panel" style="display:none">
-      <div class="history-header">
-        <div class="section-title" style="margin:0">過去 90 天已結算預測</div>
-        <div class="history-rate-badge" id="history-rate-badge">
-          <span>載入中…</span>
+<div style="padding: 0 24px 40px">
+  <button class="section-toggle" onclick="toggleHistory()" id="history-toggle-btn">
+    <span id="history-arrow">▸</span> 預判歷史紀錄 — 正確 / 失敗 / 待結算
+    <span id="history-badge-counts" style="float:right;font-weight:400;color:var(--dim)"></span>
+  </button>
+  <div id="history-panel" style="display:none">
+
+    <!-- Stats strip -->
+    <div class="history-rate-strip" id="history-rate-strip">
+      <div class="history-stat-pill correct">
+        <span class="pill-num" id="hst-correct-n">—</span>
+        <span class="pill-pct" id="hst-correct-pct">—</span>
+        <span class="pill-lbl">✅ 正確預判</span>
+      </div>
+      <div class="history-stat-pill wrong">
+        <span class="pill-num" id="hst-wrong-n">—</span>
+        <span class="pill-pct" id="hst-wrong-pct">—</span>
+        <span class="pill-lbl">❌ 失敗預判</span>
+      </div>
+      <div class="history-stat-pill pending">
+        <span class="pill-num" id="hst-pending-n">—</span>
+        <span class="pill-pct" style="color:var(--dim);font-size:11px" id="hst-pending-lbl">待結算</span>
+        <span class="pill-lbl">⏳ 尚未結算</span>
+      </div>
+      <div style="margin-left:auto;font-size:11px;color:var(--dim);align-self:center">
+        成功率計算：已結算市場中，BUY YES 且結算 YES，或 BUY NO 且結算 NO → 正確
+      </div>
+    </div>
+
+    <!-- 3-column list -->
+    <div class="history-cols">
+      <div>
+        <div class="history-col-title correct">✅ 正確 (<span id="hist-correct-count">0</span>)</div>
+        <div class="history-col-body correct" id="hist-correct-list">
+          <div class="history-empty">載入中…</div>
         </div>
       </div>
-      <div class="history-cols">
-        <div>
-          <div class="history-col-title correct">✅ 正確預判 (<span id="hist-correct-count">0</span>)</div>
-          <div class="history-col-body correct" id="hist-correct-list">
-            <div class="history-empty">載入中…</div>
-          </div>
-        </div>
-        <div>
-          <div class="history-col-title wrong">❌ 失敗預判 (<span id="hist-wrong-count">0</span>)</div>
-          <div class="history-col-body wrong" id="hist-wrong-list">
-            <div class="history-empty">載入中…</div>
-          </div>
+      <div>
+        <div class="history-col-title wrong">❌ 失敗 (<span id="hist-wrong-count">0</span>)</div>
+        <div class="history-col-body wrong" id="hist-wrong-list">
+          <div class="history-empty">載入中…</div>
         </div>
       </div>
-      <div style="margin-top:10px;font-size:11px;color:var(--dim);text-align:center">
-        判斷邏輯：BUY YES 且最終結算 YES → 正確；BUY NO 且結算 NO → 正確。市場尚未結算的預測不計入。
+      <div>
+        <div class="history-col-title pending">⏳ 待結算 (<span id="hist-pending-count">0</span>)</div>
+        <div class="history-col-body pending" id="hist-pending-list">
+          <div class="history-empty">載入中…</div>
+        </div>
       </div>
+    </div>
+
+    <div style="margin-top:8px;font-size:11px;color:var(--dim)">
+      顯示過去 90 天記錄（最多 300 筆）。市場結算日過後自動從 Open-Meteo 歷史資料比對結果。
     </div>
   </div>
 </div>
@@ -744,81 +772,95 @@ function toggleHistory() {
   const open  = panel.style.display === 'none';
   panel.style.display = open ? 'block' : 'none';
   arrow.textContent   = open ? '▾' : '▸';
-  if (open && !historyLoaded) {
-    loadHistoryResolved();
-  }
+  if (open && !historyLoaded) loadHistoryResolved();
 }
 
 function buildHistoryRow(r) {
-  const edge     = r.edge ?? r.model_prob;
-  const edgeSign = edge != null ? (edge >= 0 ? '+' : '') : '';
-  const edgeStr  = edge != null ? `${edgeSign}${(edge * 100).toFixed(1)}%` : '—';
+  const edge      = r.edge;
+  const edgeSign  = edge != null ? (edge >= 0 ? '+' : '') : '';
+  const edgeStr   = edge != null ? `${edgeSign}${(edge * 100).toFixed(1)}%` : '—';
   const edgeClass = edge != null ? (edge >= 0 ? 'pos' : 'neg') : '';
-  const dateStr  = (r.target_date || r.predicted_at || '').slice(0, 10);
-  const action   = r.action || '—';
-  const conv     = r.conviction ? `· ${r.conviction} 共識` : '';
-  const resolvedStr = r.resolved_at ? new Date(r.resolved_at).toLocaleDateString('zh-TW') : '—';
+  const dateStr   = (r.target_date || '').slice(0, 10);
+  const action    = r.action || '—';
+  const actionCls = action === 'BUY YES' ? 'hist-action-buy' : action === 'BUY NO' ? 'hist-action-sell' : '';
+  const mktPct    = r.market_price != null ? (r.market_price * 100).toFixed(0) + '%' : '—';
+  const modPct    = (r.consensus_prob ?? r.model_prob) != null
+                    ? ((r.consensus_prob ?? r.model_prob) * 100).toFixed(0) + '%' : '—';
+  const tempTag   = r.temp_display ? `<span>🌡 ${r.temp_display}</span>` : '';
+  const convTag   = r.conviction ? `<span>${{high:'★★★',medium:'★★',low:'★'}[r.conviction]||''} ${r.conviction}</span>` : '';
+  const resolvedStr = r.resolved_at ? '結算 ' + new Date(r.resolved_at).toLocaleDateString('zh-TW') : '';
+  const link      = r.market_url ? `href="${r.market_url}" target="_blank" rel="noopener"` : '';
+  const tag       = r.market_url ? 'a' : 'div';
+
   return `
-<div class="history-row">
+<${tag} class="history-row" ${link}>
   <div class="history-row-q">${r.question || r.location || '—'}</div>
   <div class="history-row-meta">
-    <span>${action}</span>
+    <span class="${actionCls}">${action}</span>
     <span class="history-row-edge ${edgeClass}">Edge ${edgeStr}</span>
+    <span>市場 ${mktPct} → 模型 ${modPct}</span>
+    ${tempTag}
     ${r.location ? `<span>📍 ${r.location}</span>` : ''}
     <span>📅 ${dateStr}</span>
-    <span>結算 ${resolvedStr}</span>
-    ${conv ? `<span>${conv}</span>` : ''}
+    ${convTag}
+    ${resolvedStr ? `<span style="color:var(--green)">${resolvedStr}</span>` : ''}
   </div>
-</div>`;
+</${tag}>`;
 }
 
 async function loadHistoryResolved() {
+  // Show loading state
+  ['hist-correct-list','hist-wrong-list','hist-pending-list'].forEach(id => {
+    document.getElementById(id).innerHTML = '<div class="history-empty">載入中…</div>';
+  });
+
   try {
     const r = await fetch('/api/history/resolved?days=90');
     const d = await r.json();
-
     historyLoaded = true;
 
-    const total   = d.total || 0;
-    const success = d.success_count || 0;
-    const fail    = d.failure_count || 0;
-    const sr      = d.success_rate;
-    const fr      = d.failure_rate;
+    const correct  = d.success_count || 0;
+    const wrong    = d.failure_count || 0;
+    const pending  = d.pending_count || 0;
+    const settled  = d.total_settled || 0;
+    const sr       = d.success_rate;
+    const fr       = d.failure_rate;
 
-    // Rate badge
-    const badge = document.getElementById('history-rate-badge');
-    if (total === 0) {
-      badge.innerHTML = '<span style="color:var(--dim)">尚無結算記錄</span>';
-    } else {
-      const srPct = sr != null ? (sr * 100).toFixed(1) : '—';
-      const frPct = fr != null ? (fr * 100).toFixed(1) : '—';
-      badge.innerHTML = `
-        <span class="rate-success">✅ 正確 ${success} 筆 (${srPct}%)</span>
-        <span class="rate-sep">vs</span>
-        <span class="rate-fail">❌ 失敗 ${fail} 筆 (${frPct}%)</span>
-        <span style="color:var(--dim);font-size:11px;font-weight:400">共 ${total} 筆</span>`;
-    }
+    // Stats pills
+    document.getElementById('hst-correct-n').textContent   = correct;
+    document.getElementById('hst-correct-pct').textContent = sr != null ? (sr*100).toFixed(1)+'%' : (settled ? '—' : 'N/A');
+    document.getElementById('hst-wrong-n').textContent     = wrong;
+    document.getElementById('hst-wrong-pct').textContent   = fr != null ? (fr*100).toFixed(1)+'%' : (settled ? '—' : 'N/A');
+    document.getElementById('hst-pending-n').textContent   = pending;
+    document.getElementById('hst-pending-lbl').textContent = pending > 0 ? '市場尚未結算' : '全部已結算';
+
+    // Badge in toggle button
+    document.getElementById('history-badge-counts').textContent =
+      `✅${correct}  ❌${wrong}  ⏳${pending}`;
 
     // Correct column
-    const correctList = document.getElementById('hist-correct-list');
-    document.getElementById('hist-correct-count').textContent = success;
-    correctList.innerHTML = success === 0
-      ? '<div class="history-empty">尚無正確預判紀錄</div>'
+    document.getElementById('hist-correct-count').textContent = correct;
+    document.getElementById('hist-correct-list').innerHTML = correct === 0
+      ? '<div class="history-empty">尚無正確記錄<br><span style="font-size:10px">市場結算後自動填入</span></div>'
       : (d.correct || []).map(buildHistoryRow).join('');
 
     // Wrong column
-    const wrongList = document.getElementById('hist-wrong-list');
-    document.getElementById('hist-wrong-count').textContent = fail;
-    wrongList.innerHTML = fail === 0
-      ? '<div class="history-empty">尚無失敗預判紀錄</div>'
+    document.getElementById('hist-wrong-count').textContent = wrong;
+    document.getElementById('hist-wrong-list').innerHTML = wrong === 0
+      ? '<div class="history-empty">尚無失敗記錄<br><span style="font-size:10px">市場結算後自動填入</span></div>'
       : (d.wrong || []).map(buildHistoryRow).join('');
 
+    // Pending column
+    document.getElementById('hist-pending-count').textContent = pending;
+    document.getElementById('hist-pending-list').innerHTML = pending === 0
+      ? '<div class="history-empty">無待結算記錄</div>'
+      : (d.pending || []).map(buildHistoryRow).join('');
+
   } catch(e) {
-    console.warn('History resolved load failed', e);
-    document.getElementById('hist-correct-list').innerHTML =
-      `<div class="history-empty">載入失敗：${e.message}</div>`;
-    document.getElementById('hist-wrong-list').innerHTML =
-      `<div class="history-empty">載入失敗：${e.message}</div>`;
+    console.warn('History load failed', e);
+    ['hist-correct-list','hist-wrong-list','hist-pending-list'].forEach(id => {
+      document.getElementById(id).innerHTML = `<div class="history-empty">載入失敗：${e.message}</div>`;
+    });
   }
 }
 

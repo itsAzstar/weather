@@ -23,7 +23,9 @@ from parser_market      import parse_all_markets
 from comparator         import compare_all_markets, EDGE_THRESHOLD
 from consensus          import get_consensus
 from latency_tracker    import get_latency_summary
-from history            import log_prediction, get_brier_score, get_recent_predictions, init_db, get_resolved_split
+from history            import (log_prediction, get_brier_score, get_recent_predictions,
+                                init_db, get_resolved_split, get_all_predictions,
+                                auto_resolve_past_markets)
 from fetcher_weather    import resolve_location
 
 app = FastAPI(title="Weather Arb Dashboard", version="2.0")
@@ -265,8 +267,15 @@ def api_history(days: int = 30):
 def api_history_resolved(days: int = 90):
     try:
         init_db()
-        split = get_resolved_split(days=days)
-        return JSONResponse(split)
+        # Try to auto-resolve any past markets using historical weather data
+        try:
+            newly_resolved = auto_resolve_past_markets()
+            if newly_resolved:
+                print(f"[History] Auto-resolved {newly_resolved} past market(s)")
+        except Exception:
+            pass
+        data = get_all_predictions(days=days, limit=300)
+        return JSONResponse(data)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
