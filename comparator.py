@@ -234,7 +234,10 @@ def _temp_bucket_model_prob(
         obs_adjusted = True
         print(f"[Comparator] obs {obs_temp_c:.1f}°C > forecast {forecast_mu:.1f}°C — using obs as mu")
 
-    sigma = max(1.5, 1.5 + (days_ahead - 1) * 0.4)
+    # Realistic GFS RMSE for daily max temp:
+    #   Same-day (d0): ~2.5°C, Day-1: ~3.0°C, +0.5°C/day thereafter
+    # Using 1.5°C was too tight → fake overconfident edges like +76%
+    sigma = max(2.5, 2.5 + (days_ahead - 1) * 0.5)
 
     lo_cdf = _norm_cdf((lo_c - effective_mu) / sigma) if lo_c is not None else 0.0
     hi_cdf = _norm_cdf((hi_c - effective_mu) / sigma) if hi_c is not None else 1.0
@@ -504,8 +507,52 @@ def compare_market(market: dict) -> Optional[dict]:
             market_price_yes = float(market_price_yes)
         except (ValueError, TypeError):
             return None
+
+        # ── Market certainty guard ─────────────────────────────────────────
+        # When the market has already priced certainty (YES>90% or NO>90%),
+        # the day is nearly done and live traders have observed real temps.
+        # Our GFS forecast is stale — defer to the market, don't fight it.
+        market_certainty = market_price_yes >= 0.90 or market_price_yes <= 0.10
+        if market_certainty and time_remaining_hours < 8.0:
+            return {
+                **market,
+                "model_probability": model_prob,
+                "weather_data": weather,
+                "weather_temp_max_c": weather.get("temp_max_c"),
+                "weather_temp_max_f": weather.get("temp_max_f"),
+                "edge": round(model_prob - market_price_yes, 4),
+                "abs_edge": abs(model_prob - market_price_yes),
+                "action": "HOLD",
+                "is_opportunity": False,
+                "skip_reason": f"Market certainty >{int(max(market_price_yes, 1-market_price_yes)*100)}% with {time_remaining_hours:.1f}h left — market knows more than model",
+                "days_ahead": days_ahead,
+                **station_data,
+                "time_remaining_hours": round(time_remaining_hours, 2),
+                "obs_adjusted": obs_adjusted,
+            }
+
         edge = round(model_prob - market_price_yes, 4)
         abs_edge = abs(edge)
+        # Cap: edge >55% almost certainly means model error, not real arb
+        # (real weather arb edges rarely exceed 30-35%)
+        EDGE_CAP = 0.55
+        if abs_edge > EDGE_CAP:
+            return {
+                **market,
+                "model_probability": model_prob,
+                "weather_data": weather,
+                "weather_temp_max_c": weather.get("temp_max_c"),
+                "weather_temp_max_f": weather.get("temp_max_f"),
+                "edge": edge,
+                "abs_edge": abs_edge,
+                "action": "HOLD",
+                "is_opportunity": False,
+                "skip_reason": f"Edge {abs_edge:.0%} exceeds cap {EDGE_CAP:.0%} — likely model/forecast error",
+                "days_ahead": days_ahead,
+                **station_data,
+                "time_remaining_hours": round(time_remaining_hours, 2),
+                "obs_adjusted": obs_adjusted,
+            }
         is_opp = abs_edge > EDGE_THRESHOLD
         action = ("BUY YES" if edge > 0 else "BUY NO") if is_opp else "HOLD"
         fc_max_c = weather.get("temp_max_c")
