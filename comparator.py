@@ -216,51 +216,54 @@ def _temp_bucket_model_prob(
 
     Returns: (probability, obs_adjusted_bool)
     """
-    mu = weather.get("temp_max_c")
-    if mu is None:
+    forecast_mu = weather.get("temp_max_c")
+    if forecast_mu is None:
         return None, False
 
-    sigma = max(1.5, 1.5 + (days_ahead - 1) * 0.4)
     lo_c = temp_bucket.get("lo_c")
     hi_c = temp_bucket.get("hi_c")
 
-    lo_cdf = _norm_cdf((lo_c - mu) / sigma) if lo_c is not None else 0.0
-    hi_cdf = _norm_cdf((hi_c - mu) / sigma) if hi_c is not None else 1.0
+    # ── Key insight: if current obs already EXCEEDS forecast, use obs as mu.
+    # The station has already recorded a higher temperature than the model
+    # predicted — the model is now lagging reality. Use the higher value so
+    # the probability calculation reflects what's actually happening.
+    obs_adjusted = False
+    effective_mu = forecast_mu
+    if obs_temp_c is not None and obs_temp_c > forecast_mu:
+        effective_mu = obs_temp_c  # obs overrides stale forecast
+        obs_adjusted = True
+        print(f"[Comparator] obs {obs_temp_c:.1f}°C > forecast {forecast_mu:.1f}°C — using obs as mu")
+
+    sigma = max(1.5, 1.5 + (days_ahead - 1) * 0.4)
+
+    lo_cdf = _norm_cdf((lo_c - effective_mu) / sigma) if lo_c is not None else 0.0
+    hi_cdf = _norm_cdf((hi_c - effective_mu) / sigma) if hi_c is not None else 1.0
     forecast_prob = max(0.0, min(1.0, hi_cdf - lo_cdf))
 
-    # Obs adjustment
-    obs_adjusted = False
-    if obs_temp_c is not None and time_remaining_hours is not None:
+    # ── Intraday obs adjustment (obs hasn't surpassed forecast yet) ─────────
+    if (obs_temp_c is not None and time_remaining_hours is not None
+            and not obs_adjusted):  # only if we didn't already override with obs
         obs_weight = max(0.0, 1.0 - time_remaining_hours / 24.0)
 
-        if obs_weight > 0.05:  # Only adjust if meaningful time has passed today
+        if obs_weight > 0.05:
             obs_adjusted = True
 
-            # Current obs EXCEEDS bucket ceiling → max for today is already above hi_c
-            # This means YES is IMPOSSIBLE (temp_max > hi_c → outside bucket above)
             if hi_c is not None and obs_temp_c > hi_c:
-                # Obs already above bucket top → bucket is definitely missed from above
-                # P(YES) collapses toward 0 proportional to obs_weight
-                adjusted = forecast_prob * (1.0 - obs_weight)
-                forecast_prob = max(0.01, round(adjusted, 3))
+                # Obs above ceiling → P(YES) collapses
+                forecast_prob = max(0.01, round(forecast_prob * (1.0 - obs_weight), 3))
 
-            # Current obs is already ABOVE bucket floor with < 4h left → likely inside or above
             elif lo_c is not None and obs_temp_c >= lo_c and time_remaining_hours < 4.0:
                 if hi_c is None or obs_temp_c < hi_c:
-                    # Obs is inside bucket and day nearly over → boost P(YES)
+                    # Obs inside bucket, day nearly done → boost
                     boosted = forecast_prob + (1.0 - forecast_prob) * obs_weight * 0.7
                     forecast_prob = min(0.97, round(boosted, 3))
 
-            # Obs is BELOW bucket floor and very little time left → won't reach bucket
             elif lo_c is not None and obs_temp_c < lo_c and time_remaining_hours < 3.0:
-                # Temperature unlikely to rise enough to enter bucket
                 gap_c = lo_c - obs_temp_c
-                if gap_c > 3.0:  # very large gap → nearly impossible
-                    adjusted = forecast_prob * (1.0 - obs_weight * 0.9)
-                    forecast_prob = max(0.01, round(adjusted, 3))
+                if gap_c > 3.0:
+                    forecast_prob = max(0.01, round(forecast_prob * (1.0 - obs_weight * 0.9), 3))
                 elif gap_c > 1.0:
-                    adjusted = forecast_prob * (1.0 - obs_weight * 0.5)
-                    forecast_prob = max(0.02, round(adjusted, 3))
+                    forecast_prob = max(0.02, round(forecast_prob * (1.0 - obs_weight * 0.5), 3))
 
     return max(0.0, min(1.0, round(forecast_prob, 3))), obs_adjusted
 
@@ -505,12 +508,17 @@ def compare_market(market: dict) -> Optional[dict]:
         abs_edge = abs(edge)
         is_opp = abs_edge > EDGE_THRESHOLD
         action = ("BUY YES" if edge > 0 else "BUY NO") if is_opp else "HOLD"
+        fc_max_c = weather.get("temp_max_c")
+        fc_max_f = weather.get("temp_max_f")
+        obs_c    = station_data.get("obs_temp_c")
         return {
             **market,
             "model_probability": model_prob,
             "weather_data": weather,
-            "weather_temp_max_c": weather.get("temp_max_c"),
-            "weather_temp_max_f": weather.get("temp_max_f"),
+            # weather_temp_max_c = forecast value (for display)
+            # obs overrides this in the UI if obs > forecast
+            "weather_temp_max_c": fc_max_c,
+            "weather_temp_max_f": fc_max_f,
             "edge": edge,
             "abs_edge": abs_edge,
             "action": action,
