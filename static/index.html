@@ -4,26 +4,27 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Weather Arb Dashboard</title>
-<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <style>
 :root {
-  --bg:      #07080f;
-  --surface: #0d0f1c;
-  --card:    #111428;
-  --border:  #1e2240;
-  --border2: #252a4a;
-  --text:    #e8eaf6;
-  --dim:     #4a5280;
-  --dim2:    #6b7db3;
-  --green:   #00e5a0;
-  --green2:  #00c285;
-  --yellow:  #f5a623;
-  --red:     #ff4d6d;
-  --blue:    #4d9fff;
-  --purple:  #a78bfa;
+  --bg:      #060810;
+  --surface: #09091a;
+  --card:    #0c0e1c;
+  --border:  rgba(255,255,255,.07);
+  --border2: rgba(255,255,255,.13);
+  --text:    #d6daf0;
+  --dim:     rgba(214,218,240,.38);
+  --dim2:    rgba(214,218,240,.58);
+  --green:   #00c98d;
+  --green2:  #00a876;
+  --yellow:  #e8a84c;
+  --red:     #f04060;
+  --blue:    #5b8ef0;
+  --purple:  #9b7cf4;
   --mono:    'JetBrains Mono', monospace;
-  --sans:    'Outfit', system-ui, sans-serif;
+  --sans:    'DM Sans', system-ui, sans-serif;
+  --display: 'Syne', var(--sans);
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -32,11 +33,10 @@ body {
   font-family: var(--sans);
   font-size: 14px;
   min-height: 100vh;
-  /* Subtle grid background texture */
   background-image:
-    linear-gradient(rgba(78,95,220,.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(78,95,220,.03) 1px, transparent 1px);
-  background-size: 40px 40px;
+    linear-gradient(rgba(91,142,240,.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(91,142,240,.025) 1px, transparent 1px);
+  background-size: 48px 48px;
 }
 
 /* ── Header ─────────────────────────────────────────────── */
@@ -51,13 +51,13 @@ header {
   position: sticky; top: 0; z-index: 100;
 }
 .logo {
-  font-family: var(--mono);
-  font-size: 16px;
-  font-weight: 700;
+  font-family: var(--display);
+  font-size: 17px;
+  font-weight: 800;
   letter-spacing: -0.5px;
   display: flex; align-items: center; gap: 10px;
 }
-.logo-icon { font-size: 20px; }
+.logo-icon { font-size: 18px; }
 .logo-text { color: var(--text); }
 .logo-text span { color: var(--green); }
 .header-meta { display: flex; gap: 14px; align-items: center; }
@@ -199,49 +199,49 @@ main { display: grid; grid-template-columns: 1fr 290px; gap: 24px; padding: 24px
 .card {
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  margin-bottom: 32px;
+  border-radius: 10px;
+  margin-bottom: 20px;
   position: relative;
   text-decoration: none;
   color: inherit;
   display: block;
   overflow: hidden;
-  transition: border-color .2s, box-shadow .2s, transform .2s;
-  box-shadow: 0 2px 12px rgba(0,0,0,.25);
+  transition: border-color .2s, box-shadow .2s, transform .18s;
 }
 .card:hover {
   border-color: var(--border2);
-  box-shadow: 0 6px 36px rgba(0,0,0,.45);
+  box-shadow: 0 8px 40px rgba(0,0,0,.5);
   transform: translateY(-1px);
 }
 .card.opportunity {
-  border-left: 3px solid var(--green);
+  border-color: rgba(0,201,141,.22);
+  box-shadow: inset 3px 0 0 var(--green);
 }
-.card.opportunity:hover { border-color: var(--green); }
+.card.opportunity:hover { border-color: rgba(0,201,141,.4); }
 .card.no-edge {
-  border-left: 3px solid var(--border);
-  opacity: .7;
+  opacity: .65;
 }
-.card.no-edge:hover { opacity: .85; }
+.card.no-edge:hover { opacity: .82; }
 
 /* Card internal sections */
 .card-head {
-  padding: 20px 24px 16px;
+  padding: 16px 20px 12px;
 }
 .card-section {
-  padding: 14px 24px;
+  padding: 12px 20px;
   border-top: 1px solid var(--border);
 }
 .card-section.prices {
-  background: rgba(255,255,255,.015);
+  padding: 0;
+  background: rgba(255,255,255,.012);
 }
 .card-section.data {
-  padding: 12px 24px;
+  padding: 10px 20px;
 }
 .card-section.kelly-section {
-  padding: 12px 24px;
-  background: rgba(77,159,255,.04);
-  border-top: 1px solid rgba(77,159,255,.15);
+  padding: 10px 20px;
+  background: rgba(91,142,240,.04);
+  border-top: 1px solid rgba(91,142,240,.12);
 }
 
 /* ── Top-5 Badge ─────────────────────────────────────────── */
@@ -250,22 +250,22 @@ main { display: grid; grid-template-columns: 1fr 290px; gap: 24px; padding: 24px
   align-items: center;
   gap: 4px;
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 700;
   color: #000;
   background: var(--yellow);
-  padding: 2px 10px 2px 8px;
-  border-radius: 0 0 8px 0;
+  padding: 2px 8px;
+  border-radius: 0 0 6px 0;
   position: absolute;
   top: 0; left: 0;
   letter-spacing: .3px;
 }
 
-/* Card header zone */
+/* Card header */
 .card-link-hint {
   position: absolute;
-  top: 18px;
-  right: 20px;
+  top: 16px;
+  right: 18px;
   font-size: 10px;
   color: var(--dim);
   font-family: var(--mono);
@@ -278,81 +278,107 @@ main { display: grid; grid-template-columns: 1fr 290px; gap: 24px; padding: 24px
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 16px;
+  gap: 14px;
 }
 .card-question {
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 13.5px;
+  font-weight: 500;
   line-height: 1.45;
   flex: 1;
   color: var(--text);
-  padding-top: 2px;
+  font-family: var(--sans);
 }
 .edge-badge {
   font-family: var(--mono);
-  font-size: 26px;
+  font-size: 20px;
   font-weight: 700;
   color: var(--green);
   white-space: nowrap;
   line-height: 1;
+  padding: 2px 8px;
+  border-radius: 5px;
+  background: rgba(0,201,141,.08);
+  border: 1px solid rgba(0,201,141,.2);
+  flex-shrink: 0;
+  align-self: center;
 }
-.edge-badge.negative { color: var(--red); }
+.edge-badge.negative {
+  color: var(--red);
+  background: rgba(240,64,96,.08);
+  border-color: rgba(240,64,96,.2);
+}
 
 /* Tags row */
 .card-meta {
   display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin-top: 14px;
+  gap: 5px;
+  flex-wrap: nowrap;
+  margin-top: 10px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  align-items: center;
 }
+.card-meta::-webkit-scrollbar { display: none; }
 .tag {
-  font-size: 11px;
+  font-size: 10.5px;
   font-family: var(--mono);
-  padding: 3px 9px;
+  padding: 2px 8px;
   border-radius: 4px;
   border: 1px solid var(--border2);
   color: var(--dim2);
   white-space: nowrap;
+  flex-shrink: 0;
 }
-.tag.action-buy  { border-color: var(--green); color: var(--green); font-weight: 700; background: rgba(0,229,160,.06); }
-.tag.action-sell { border-color: var(--red);   color: var(--red);   font-weight: 700; background: rgba(255,77,109,.06); }
-.tag.conviction-high   { border-color: var(--purple); color: var(--purple); background: rgba(167,139,250,.06); }
-.tag.conviction-medium { border-color: var(--yellow); color: var(--yellow); background: rgba(245,166,35,.06); }
-.tag.conviction-low    { border-color: var(--dim);    color: var(--dim); }
+.tag.action-buy  { border-color: rgba(0,201,141,.4); color: var(--green); font-weight: 600; background: rgba(0,201,141,.07); }
+.tag.action-sell { border-color: rgba(240,64,96,.4); color: var(--red);   font-weight: 600; background: rgba(240,64,96,.07); }
+.tag.conviction-high   { border-color: rgba(155,124,244,.4); color: var(--purple); background: rgba(155,124,244,.07); }
+.tag.conviction-medium { border-color: rgba(232,168,76,.4);  color: var(--yellow); background: rgba(232,168,76,.07); }
+.tag.conviction-low    { border-color: var(--border); color: var(--dim); }
 
-/* ── Prices Grid ─────────────────────────────────────────── */
-.prob-row {
-  display: grid;
-  gap: 8px;
-  margin: 0;
+/* ── Price Bar (replaces old grid) ───────────────────────── */
+.price-bar {
+  display: flex;
+  align-items: stretch;
 }
-.prob-cell {
-  background: rgba(255,255,255,.025);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 12px 10px;
-  text-align: center;
+.price-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 6px;
+  border-right: 1px solid var(--border);
+  gap: 3px;
+  min-width: 0;
 }
-.prob-label {
+.price-col:last-child { border-right: none; }
+.price-col.yes-col { background: rgba(0,201,141,.04); }
+.price-col.no-col  { background: rgba(240,64,96,.04); }
+.price-label {
   font-size: 9px;
-  color: var(--dim2);
-  margin-bottom: 6px;
-  text-transform: uppercase;
   letter-spacing: .8px;
+  text-transform: uppercase;
+  color: var(--dim);
   font-family: var(--mono);
+  white-space: nowrap;
 }
-.prob-value {
-  font-size: 24px;
-  font-weight: 700;
+.price-num {
+  font-size: 18px;
+  font-weight: 600;
   font-family: var(--mono);
   line-height: 1;
 }
-.prob-value.high  { color: var(--green); }
-.prob-value.mid   { color: var(--yellow); }
-.prob-value.low   { color: var(--red); }
-/* YES cell highlight */
-.prob-cell.yes-cell { border-color: rgba(0,229,160,.2); background: rgba(0,229,160,.04); }
-.prob-cell.no-cell  { border-color: rgba(255,77,109,.2); background: rgba(255,77,109,.04); }
+.price-num.high  { color: var(--green); }
+.price-num.mid   { color: var(--yellow); }
+.price-num.low   { color: var(--red); }
+.price-num.yes-col-val { color: var(--green); }
+.price-num.no-col-val  { color: var(--red); }
+.price-num.agree-val   { color: var(--blue); }
+.price-sub {
+  font-size: 8.5px;
+  color: var(--dim);
+  font-family: var(--mono);
+}
 
 /* ── Model Consensus Row ─────────────────────────────────── */
 .consensus-row {
@@ -1047,6 +1073,47 @@ function _renderOppList(opps, isSoon) {
   return html;
 }
 
+// ── Date group header ──────────────────────────────────────
+function _dateGroupHeader(dateStr) {
+  const now = Date.now();
+  const endOfDay = new Date(dateStr + 'T23:59:59Z').getTime();
+  const isEnded  = endOfDay < now;
+  const label    = _getDateLabel(dateStr);
+  const style    = isEnded
+    ? 'color:var(--dim);border-color:var(--border)'
+    : 'color:var(--dim2);border-color:var(--border2)';
+  return `<div style="display:flex;align-items:center;gap:8px;margin:18px 0 10px;font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;font-family:var(--mono);${style}">
+    <span style="border:1px solid;border-color:inherit;border-radius:4px;padding:2px 10px">${label}${isEnded ? ' · 已截止' : ''}</span>
+    <div style="flex:1;height:1px;background:currentColor;opacity:.25"></div>
+  </div>`;
+}
+
+// ── All-dates grouped render ────────────────────────────────
+function _renderAllGrouped(opps, noEdge) {
+  const now = Date.now();
+  // Group opps by date
+  const dateMap = {};
+  opps.forEach(r => {
+    const d = _getCardDate(r);
+    if (!dateMap[d]) dateMap[d] = [];
+    dateMap[d].push(r);
+  });
+  const dates = Object.keys(dateMap).sort((a, b) => {
+    // Active dates first (soonest), ended dates last
+    const aEnd = new Date(a + 'T23:59:59Z').getTime();
+    const bEnd = new Date(b + 'T23:59:59Z').getTime();
+    const aEnded = aEnd < now, bEnded = bEnd < now;
+    if (aEnded !== bEnded) return aEnded ? 1 : -1;
+    return aEnded ? bEnd - aEnd : aEnd - bEnd;
+  });
+  let html = '';
+  dates.forEach(d => {
+    html += _dateGroupHeader(d);
+    html += _renderOppList(dateMap[d], false);
+  });
+  return html;
+}
+
 function applyDateFilter(dateStr) {
   _activeDate = dateStr;
   renderDateFilter(_allOpportunities, _allNoEdge);
@@ -1054,6 +1121,7 @@ function applyDateFilter(dateStr) {
   const filteredOpps   = _filterByActive(_allOpportunities, dateStr);
   const filteredNoEdge = _filterByActive(_allNoEdge,        dateStr);
   const isSoon         = dateStr.startsWith('soon-');
+  const isAll          = dateStr === 'all';
 
   // ── Opportunities ──
   const oppList = document.getElementById('opportunities-list');
@@ -1064,6 +1132,9 @@ function applyDateFilter(dateStr) {
       : (noEdgeCount > 0 ? `找到 ${noEdgeCount} 個市場，但 Edge < 8%，往下查看 ↓` : '此日期無可評估的市場');
     oppList.innerHTML = `<div class="empty"><div class="empty-icon">📊</div><div>無超過 8% Edge 的機會</div>
       <div style="margin-top:8px;font-size:12px;color:var(--yellow)">${hint}</div></div>`;
+  } else if (isAll) {
+    // "全部" view: group by date with visual date headers
+    oppList.innerHTML = _renderAllGrouped(filteredOpps, filteredNoEdge);
   } else {
     const soonHeader = isSoon ? `<div class="soon-divider">⚡ 即將截止 — 按剩餘時間排序</div>` : '';
     oppList.innerHTML = soonHeader + _renderOppList(filteredOpps, isSoon);
@@ -1431,11 +1502,11 @@ function buildCard(r, isOpp, rank) {
   const locationTag = r.location_hint || r.parsed?.location || '—';
   const dateTag     = r.parsed?.target_date || (r.end_date ? r.end_date.slice(0,10) : '—');
 
-  // Weather site link
+  // Weather site link — inline icon only (no name text, avoids orphan line)
   const wxCity = r.location_hint || r.parsed?.location || '';
   const wxSite = getWeatherLink(wxCity);
-  const wxLink = wxSite
-    ? `<a class="wx-link" href="${wxSite.url}" target="_blank" rel="noopener">📡 ${wxSite.name}</a>`
+  const wxIconLink = wxSite
+    ? `<a href="${wxSite.url}" target="_blank" rel="noopener" title="${wxSite.name}" style="color:var(--blue);font-size:10px;text-decoration:none;border:1px solid rgba(91,142,240,.25);border-radius:4px;padding:2px 6px;font-family:var(--mono);white-space:nowrap;flex-shrink:0">↗ ${wxSite.name}</a>`
     : '';
 
   // ── Timer badge ────────────────────────────────────────────
@@ -1446,17 +1517,16 @@ function buildCard(r, isOpp, rank) {
 
   // ── Station badge ──────────────────────────────────────────
   const stationBadge = r.station_icao
-    ? `<span class="tag" style="color:var(--purple);border-color:var(--purple)">📡 ${r.station_icao}${r.station_name && r.station_name !== r.station_icao ? ' — ' + r.station_name : ''}</span>`
+    ? `<span class="tag" style="color:var(--purple);border-color:rgba(155,124,244,.35)">📡 ${r.station_icao}</span>`
     : '';
 
   // ── Current obs box ────────────────────────────────────────
   let obsBox = '';
   if (r.obs_temp_c != null) {
-    const ageStr   = r.obs_age_min != null ? Math.round(r.obs_age_min) + 'min前' : '';
-    const remStr   = r.time_remaining_hours != null ? r.time_remaining_hours.toFixed(1) + 'h' : '';
-    const tempF    = r.obs_temp_f != null ? ' / ' + r.obs_temp_f.toFixed(1) + '°F' : '';
+    const ageStr = r.obs_age_min != null ? Math.round(r.obs_age_min) + 'min前' : '';
+    const remStr = r.time_remaining_hours != null ? r.time_remaining_hours.toFixed(1) + 'h' : '';
+    const tempF  = r.obs_temp_f != null ? ' / ' + r.obs_temp_f.toFixed(1) + '°F' : '';
 
-    // Reason text based on bucket position
     let reasonHtml = '';
     if (isTempBucket && r.obs_adjusted) {
       const tb    = r.temp_bucket || {};
@@ -1464,22 +1534,22 @@ function buildCard(r, isOpp, rank) {
       const hi_c  = tb.hi_c;
       const obs_c = r.obs_temp_c;
       if (hi_c != null && obs_c > hi_c) {
-        reasonHtml = `<div class="obs-reason" style="background:rgba(239,68,68,.08);color:var(--red)">
-          ↳ 實測溫度已超過區間上限 ${hi_c}°C，今日最高溫幾乎確定超出此區間 → 建議 BUY NO
+        reasonHtml = `<div class="obs-reason" style="background:rgba(240,64,96,.08);color:var(--red)">
+          ↳ 實測已超過區間上限 ${hi_c}°C → 建議 BUY NO
         </div>`;
       } else if (lo_c != null && obs_c >= lo_c && (hi_c == null || obs_c < hi_c) && r.time_remaining_hours < 4.0) {
-        reasonHtml = `<div class="obs-reason" style="background:rgba(34,197,94,.08);color:var(--green)">
-          ↳ 實測溫度 ${obs_c}°C 已在區間內，剩餘時間 ${remStr}，今日最高溫大概率維持在此區間
+        reasonHtml = `<div class="obs-reason" style="background:rgba(0,201,141,.08);color:var(--green)">
+          ↳ 實測已在區間內，剩餘 ${remStr}，大概率維持
         </div>`;
       } else if (lo_c != null && obs_c < lo_c && r.time_remaining_hours < 3.0) {
-        reasonHtml = `<div class="obs-reason" style="background:rgba(239,68,68,.08);color:var(--yellow)">
-          ↳ 實測溫度 ${obs_c}°C 低於區間下限 ${lo_c}°C，剩餘 ${remStr}，進入此區間概率已降低
+        reasonHtml = `<div class="obs-reason" style="background:rgba(232,168,76,.08);color:var(--yellow)">
+          ↳ 實測低於下限 ${lo_c}°C，剩餘 ${remStr}，進入概率已降低
         </div>`;
       }
     }
 
     obsBox = `<div class="obs-box">
-      🌡 <b>當前站點實測</b>：<b>${r.obs_temp_c.toFixed(1)}°C${tempF}</b>${ageStr ? `  (${ageStr})` : ''}${remStr ? `  ⏱ 剩餘 ${remStr}` : ''}
+      🌡 <b>站點實測</b> <b style="color:var(--text)">${r.obs_temp_c.toFixed(1)}°C${tempF}</b>${ageStr ? `<span style="color:var(--dim);margin-left:6px">${ageStr}</span>` : ''}${remStr ? `<span style="color:var(--dim);margin-left:6px">⏱ ${remStr}</span>` : ''}
       ${reasonHtml}
     </div>`;
   }
@@ -1490,12 +1560,16 @@ function buildCard(r, isOpp, rank) {
   const hasDataSection = !!(forecastLine || obsBox || (cons && (gfs_p != null || ecmwf_p != null || icon_p != null)));
   const hasConsensus   = !!(cons && (gfs_p != null || ecmwf_p != null || icon_p != null));
 
+  // agree color
+  const agreeFrac = cons.models_agree != null ? cons.models_agree / totalSources : null;
+  const agreeClass = agreeFrac != null ? (agreeFrac >= 0.75 ? 'high' : agreeFrac >= 0.5 ? 'mid' : 'low') : '';
+
   return `
 <${tag} class="card ${cardClass}" ${linkAttr}>
   ${top5Badge}
   ${linkHint ? `<span class="card-link-hint">${linkHint}</span>` : ''}
 
-  <div class="card-head"${top5Badge ? ' style="padding-top:28px"' : ''}>
+  <div class="card-head"${top5Badge ? ' style="padding-top:26px"' : ''}>
     <div class="card-header">
       <div class="card-question">${r.question || '—'}</div>
       <div class="edge-badge ${edgeClass}">${r.edge != null ? edgeSign + pct(edge) : '—'}</div>
@@ -1508,28 +1582,28 @@ function buildCard(r, isOpp, rank) {
       <span class="tag">📅 ${dateTag}</span>
       ${timerBadge}
       ${stationBadge}
-      ${isTempBucket ? '<span class="tag" style="color:var(--green);border-color:var(--green)">✓ 真實市場</span>' : isMock ? '<span class="tag" style="color:var(--yellow);border-color:var(--yellow)">Demo</span>' : ''}
-      ${wxLink}
+      ${isTempBucket ? '<span class="tag" style="color:var(--green);border-color:rgba(0,201,141,.35)">✓ Real</span>' : isMock ? '<span class="tag" style="color:var(--yellow)">Demo</span>' : ''}
+      ${wxIconLink}
     </div>
   </div>
 
   <div class="card-section prices">
-    <div class="prob-row" style="grid-template-columns:1fr 1fr 1fr 1fr;">
-      <div class="prob-cell yes-cell">
-        <div class="prob-label">YES 價格</div>
-        <div class="prob-value ${probClass(mktYes)}">${pct(mktYes)}</div>
+    <div class="price-bar">
+      <div class="price-col yes-col">
+        <span class="price-label">YES 市場</span>
+        <span class="price-num yes-col-val">${pct(mktYes)}</span>
       </div>
-      <div class="prob-cell no-cell">
-        <div class="prob-label">NO 價格</div>
-        <div class="prob-value ${probClass(mktNo != null ? 1-mktNo : null)}">${pct(mktNo)}</div>
+      <div class="price-col no-col">
+        <span class="price-label">NO 市場</span>
+        <span class="price-num no-col-val">${pct(mktNo)}</span>
       </div>
-      <div class="prob-cell">
-        <div class="prob-label">模型概率 YES</div>
-        <div class="prob-value ${modClass}">${modDisplay}</div>
+      <div class="price-col">
+        <span class="price-label">模型概率</span>
+        <span class="price-num ${modClass}">${modDisplay}</span>
       </div>
-      <div class="prob-cell">
-        <div class="prob-label">${totalSources}模型合意</div>
-        <div class="prob-value ${probClass((cons.models_agree||0)/totalSources)}">${cons.models_agree != null ? cons.models_agree + '/' + totalSources : '—'}</div>
+      <div class="price-col">
+        <span class="price-label">模型合意</span>
+        <span class="price-num ${agreeClass} agree-val">${cons.models_agree != null ? cons.models_agree + '/' + totalSources : '—'}</span>
       </div>
     </div>
   </div>
@@ -1539,13 +1613,13 @@ function buildCard(r, isOpp, rank) {
     ${forecastLine}
     ${obsBox}
     ${hasConsensus ? `
-    <div class="consensus-row" style="margin-top:${forecastLine || obsBox ? '12px' : '0'}">
+    <div class="consensus-row" style="margin-top:${forecastLine || obsBox ? '10px' : '0'}">
       ${modelBadge('GFS', gfs_p)}
       ${modelBadge('ECMWF', ecmwf_p)}
       ${modelBadge('ICON', icon_p)}
       ${nws_p != null ? modelBadge('NWS', nws_p) : ''}
       ${metno_p != null ? modelBadge('Met.no', metno_p) : ''}
-      <span style="color:var(--dim);margin-left:auto">Spread ${spreadPct}%</span>
+      <span style="color:var(--dim);margin-left:auto;font-family:var(--mono);font-size:10px">Spread ${spreadPct}%</span>
     </div>
     <div class="spread-row">
       <span>不確定度</span>

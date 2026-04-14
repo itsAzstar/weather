@@ -4,13 +4,18 @@ SQLite 歷史記錄 + Brier Score 校準追蹤。
 每次掃描時記錄預測，市場結算後記錄結果，計算滾動 Brier Score。
 """
 
+import os
 import sqlite3
 import json
 from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
 from typing import Optional
 
-DB_PATH = Path(__file__).parent / "weather_history.db"
+# Railway / production: set DB_PATH env var to a persistent volume path
+# e.g. DB_PATH=/data/weather_history.db  (Railway Volume mounted at /data)
+# Local dev: defaults to project directory
+_default_db = Path(__file__).parent / "weather_history.db"
+DB_PATH = Path(os.environ.get("DB_PATH", str(_default_db)))
 
 
 def _connect() -> sqlite3.Connection:
