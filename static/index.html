@@ -827,7 +827,12 @@ function startTimers() {
 // ── "Ending soon" filter helpers ───────────────────────────
 function _getEndMs(r) {
   const s = r.end_date || '';
-  return s ? new Date(s).getTime() : null;
+  if (!s) return null;
+  // If only a date (no time component), treat as end-of-day UTC (23:59:59Z)
+  // This prevents new Date("2026-04-15") parsing as UTC midnight
+  const normalized = /^\d{4}-\d{2}-\d{2}$/.test(s) ? s + 'T23:59:59Z' : s;
+  const ms = new Date(normalized).getTime();
+  return isNaN(ms) ? null : ms;
 }
 
 function _matchSoonFilter(r, filter) {
@@ -1294,7 +1299,7 @@ function buildCard(r, isOpp, rank) {
     : '';
 
   // ── Timer badge ────────────────────────────────────────────
-  const endMs  = r.end_date ? new Date(r.end_date).getTime() : null;
+  const endMs  = _getEndMs(r);
   const timerBadge = endMs
     ? `<span class="timer-badge ok" data-end-ts="${endMs}">⏱ …</span>`
     : '';
@@ -1542,10 +1547,15 @@ async function loadOpportunities(forceRefresh = false) {
       ribbonSrc.textContent = t; ribbonSrc.style.color = 'var(--green)';
     }
 
-    // Store globally for date filter
-    _allOpportunities = d.opportunities || [];
-    _allNoEdge        = d.no_edge || [];
-    _activeDate       = 'all';  // reset filter on fresh load
+    // Store globally for date filter — sort by end_date ascending (soonest first)
+    function _byEndTime(a, b) {
+      const at = a.end_date ? new Date(a.end_date).getTime() : Infinity;
+      const bt = b.end_date ? new Date(b.end_date).getTime() : Infinity;
+      return at - bt;
+    }
+    _allOpportunities = (d.opportunities || []).slice().sort(_byEndTime);
+    _allNoEdge        = (d.no_edge || []).slice().sort(_byEndTime);
+    _activeDate       = 'all';
 
     // Render date filter tabs
     renderDateFilter(_allOpportunities, _allNoEdge);
