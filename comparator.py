@@ -20,7 +20,7 @@ from fetcher_weather import (
 from fetcher_stations import resolve_station, get_station_obs
 
 MAX_DAYS_AHEAD = 10       # Only consider markets resolving within this window
-EDGE_THRESHOLD = 0.05     # 5% minimum divergence to flag as opportunity
+EDGE_THRESHOLD = 0.08     # 8% minimum divergence to flag as opportunity (5% had too much noise)
 
 # ── Timezone offset helpers (lon-based approximation) ────────────────────────
 # Major US cities hardcoded for accuracy; others use lon/15 heuristic.
