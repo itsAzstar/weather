@@ -309,16 +309,33 @@ def api_refresh():
 
 @app.on_event("startup")
 def _warm_cache():
-    """Pre-warm the cache in a background thread so first page load is instant."""
+    """Pre-warm the cache + start background resolution scheduler."""
     import threading
-    def _bg():
+
+    # 1. Pre-warm scan so first page load is instant
+    def _bg_warm():
         try:
-            # Small delay so server is fully up before scan starts
             time.sleep(2)
             api_opportunities(refresh=False)
         except Exception:
             pass
-    threading.Thread(target=_bg, daemon=True).start()
+    threading.Thread(target=_bg_warm, daemon=True).start()
+
+    # 2. Background scheduler: auto-resolve settled markets every 10 min
+    #    Runs independently — no page load required.
+    def _bg_resolver():
+        time.sleep(30)   # Let server fully start first
+        while True:
+            try:
+                init_db()
+                n = auto_resolve_past_markets()
+                if n:
+                    print(f"[Scheduler] Auto-resolved {n} settled market(s)")
+            except Exception as e:
+                print(f"[Scheduler] Resolution error: {e}")
+            time.sleep(10 * 60)   # Check every 10 minutes
+    threading.Thread(target=_bg_resolver, daemon=True).start()
+    print("[Scheduler] Background resolution scheduler started (every 10 min)")
 
 
 if __name__ == "__main__":

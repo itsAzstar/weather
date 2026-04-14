@@ -4,103 +4,133 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Weather Arb Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <style>
 :root {
-  --bg:      #0f1117;
-  --surface: #1a1d27;
-  --border:  #2a2d3a;
-  --text:    #e2e8f0;
-  --dim:     #64748b;
-  --green:   #22c55e;
-  --yellow:  #eab308;
-  --red:     #ef4444;
-  --blue:    #3b82f6;
-  --purple:  #a855f7;
+  --bg:      #07080f;
+  --surface: #0d0f1c;
+  --card:    #111428;
+  --border:  #1e2240;
+  --border2: #252a4a;
+  --text:    #e8eaf6;
+  --dim:     #4a5280;
+  --dim2:    #6b7db3;
+  --green:   #00e5a0;
+  --green2:  #00c285;
+  --yellow:  #f5a623;
+  --red:     #ff4d6d;
+  --blue:    #4d9fff;
+  --purple:  #a78bfa;
+  --mono:    'JetBrains Mono', monospace;
+  --sans:    'Outfit', system-ui, sans-serif;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-family: var(--sans);
   font-size: 14px;
   min-height: 100vh;
+  /* Subtle grid background texture */
+  background-image:
+    linear-gradient(rgba(78,95,220,.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(78,95,220,.03) 1px, transparent 1px);
+  background-size: 40px 40px;
 }
 
 /* ── Header ─────────────────────────────────────────────── */
 header {
-  padding: 16px 24px;
+  padding: 14px 28px;
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
   justify-content: space-between;
+  background: rgba(13,15,28,.8);
+  backdrop-filter: blur(12px);
+  position: sticky; top: 0; z-index: 100;
 }
-.logo { font-size: 18px; font-weight: 700; letter-spacing: -0.5px; }
-.logo span { color: var(--blue); }
-.header-meta { display: flex; gap: 16px; align-items: center; }
-.scan-time { color: var(--dim); font-size: 12px; }
+.logo {
+  font-family: var(--mono);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  display: flex; align-items: center; gap: 10px;
+}
+.logo-icon { font-size: 20px; }
+.logo-text { color: var(--text); }
+.logo-text span { color: var(--green); }
+.header-meta { display: flex; gap: 14px; align-items: center; }
+.scan-time {
+  color: var(--dim2);
+  font-size: 11px;
+  font-family: var(--mono);
+}
 #refresh-btn {
-  background: var(--blue);
-  color: #fff;
-  border: none;
+  background: transparent;
+  color: var(--green);
+  border: 1px solid var(--green);
   border-radius: 6px;
-  padding: 6px 14px;
+  padding: 6px 16px;
   cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
-  transition: opacity .15s;
+  font-size: 12px;
+  font-weight: 700;
+  font-family: var(--mono);
+  letter-spacing: .5px;
+  transition: all .15s;
 }
-#refresh-btn:hover { opacity: .85; }
-#refresh-btn:disabled { opacity: .5; cursor: default; }
+#refresh-btn:hover { background: rgba(0,229,160,.1); }
+#refresh-btn:disabled { opacity: .4; cursor: default; }
 
 /* ── Latency Banner ──────────────────────────────────────── */
 #latency-banner {
   display: none;
-  margin: 12px 24px;
+  margin: 10px 28px;
   padding: 10px 16px;
-  border-radius: 8px;
-  border-left: 4px solid var(--yellow);
-  background: rgba(234,179,8,.1);
-  font-size: 13px;
+  border-radius: 6px;
+  border-left: 3px solid var(--yellow);
+  background: rgba(245,166,35,.08);
+  font-size: 12px;
   font-weight: 600;
+  font-family: var(--mono);
 }
 #latency-banner.green {
   border-color: var(--green);
-  background: rgba(34,197,94,.08);
+  background: rgba(0,229,160,.06);
 }
 
 /* ── Model Status Bar ────────────────────────────────────── */
 #model-bar {
   display: flex;
-  gap: 10px;
-  padding: 10px 24px;
+  gap: 8px;
+  padding: 8px 28px;
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
+  background: var(--surface);
 }
 .model-pill {
   display: flex;
   align-items: center;
-  gap: 6px;
-  background: var(--surface);
+  gap: 5px;
+  background: transparent;
   border: 1px solid var(--border);
-  border-radius: 20px;
-  padding: 4px 12px;
-  font-size: 12px;
+  border-radius: 4px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--dim2);
 }
-.model-pill .dot {
-  width: 8px; height: 8px;
-  border-radius: 50%;
-}
-.dot.fresh  { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.model-pill .dot { width: 6px; height: 6px; border-radius: 50%; }
+.dot.fresh  { background: var(--green); box-shadow: 0 0 8px var(--green); }
 .dot.normal { background: var(--dim); }
 .dot.stale  { background: var(--red); }
 
-/* ── Stats Ribbon (always-visible top bar) ───────────────── */
+/* ── Stats Ribbon ────────────────────────────────────────── */
 #stats-ribbon {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   gap: 0;
-  padding: 0 24px;
+  padding: 0 28px;
   border-bottom: 1px solid var(--border);
   overflow-x: auto;
   scrollbar-width: none;
@@ -111,119 +141,134 @@ header {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 10px 18px;
+  justify-content: center;
+  padding: 12px 22px;
   border-right: 1px solid var(--border);
-  min-width: 80px;
+  min-width: 90px;
   flex-shrink: 0;
+  gap: 2px;
 }
 .ribbon-chip:last-child { border-right: none; }
-.ribbon-chip .rc-val { font-size: 20px; font-weight: 800; }
-.ribbon-chip .rc-lbl { font-size: 10px; color: var(--dim); margin-top: 1px; }
+.ribbon-chip .rc-val {
+  font-size: 22px;
+  font-weight: 800;
+  font-family: var(--mono);
+  line-height: 1;
+}
+.ribbon-chip .rc-lbl { font-size: 9px; color: var(--dim); letter-spacing: .5px; text-transform: uppercase; }
 .ribbon-chip.rc-green .rc-val { color: var(--green); }
 .ribbon-chip.rc-yellow .rc-val { color: var(--yellow); }
 .ribbon-chip.rc-blue .rc-val { color: var(--blue); }
-.ribbon-chip.rc-dim .rc-val { color: var(--dim); }
+.ribbon-chip.rc-dim .rc-val { color: var(--dim2); }
 #ribbon-source {
   margin-left: auto;
-  font-size: 11px;
+  font-size: 10px;
   padding: 0 16px;
-  color: var(--dim);
+  color: var(--dim2);
   flex-shrink: 0;
+  font-family: var(--mono);
+  align-self: center;
 }
 
 /* ── Main Layout ─────────────────────────────────────────── */
-main { display: grid; grid-template-columns: 1fr 300px; gap: 20px; padding: 20px 24px; }
+main { display: grid; grid-template-columns: 1fr 290px; gap: 24px; padding: 24px 28px; }
 @media (max-width: 900px) {
-  main { grid-template-columns: 1fr; }
-  /* sidebar goes to top on mobile via order */
-  .sidebar { display: none; }  /* hidden — stats ribbon covers it */
+  main { grid-template-columns: 1fr; padding: 16px; }
+  .sidebar { display: none; }
 }
 
 /* ── Section Titles ─────────────────────────────────────── */
 .section-title {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
-  letter-spacing: 1px;
+  letter-spacing: 1.5px;
   text-transform: uppercase;
-  color: var(--dim);
-  margin-bottom: 12px;
+  color: var(--dim2);
+  margin-bottom: 16px;
+  font-family: var(--mono);
+  display: flex; align-items: center; gap: 8px;
+}
+.section-title::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
 }
 
-/* ── Opportunity Card ────────────────────────────────────── */
+/* ── CARD ────────────────────────────────────────────────── */
 .card {
-  background: var(--surface);
+  background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 20px 22px;
-  margin-bottom: 16px;
+  border-radius: 12px;
+  margin-bottom: 32px;
   position: relative;
-  transition: border-color .15s, transform .1s;
   text-decoration: none;
   color: inherit;
   display: block;
+  overflow: hidden;
+  transition: border-color .2s, box-shadow .2s, transform .2s;
+  box-shadow: 0 2px 12px rgba(0,0,0,.25);
+}
+.card:hover {
+  border-color: var(--border2);
+  box-shadow: 0 6px 36px rgba(0,0,0,.45);
+  transform: translateY(-1px);
+}
+.card.opportunity {
+  border-left: 3px solid var(--green);
+}
+.card.opportunity:hover { border-color: var(--green); }
+.card.no-edge {
+  border-left: 3px solid var(--border);
+  opacity: .7;
+}
+.card.no-edge:hover { opacity: .85; }
+
+/* Card internal sections */
+.card-head {
+  padding: 20px 24px 16px;
+}
+.card-section {
+  padding: 14px 24px;
+  border-top: 1px solid var(--border);
+}
+.card-section.prices {
+  background: rgba(255,255,255,.015);
+}
+.card-section.data {
+  padding: 12px 24px;
+}
+.card-section.kelly-section {
+  padding: 12px 24px;
+  background: rgba(77,159,255,.04);
+  border-top: 1px solid rgba(77,159,255,.15);
 }
 
 /* ── Top-5 Badge ─────────────────────────────────────────── */
 .top5-badge {
-  position: absolute;
-  top: -1px; left: -1px;
-  background: var(--yellow);
-  color: #000;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--mono);
   font-size: 10px;
-  font-weight: 800;
-  padding: 2px 10px;
-  border-radius: 9px 0 8px 0;
+  font-weight: 700;
+  color: #000;
+  background: var(--yellow);
+  padding: 2px 10px 2px 8px;
+  border-radius: 0 0 8px 0;
+  position: absolute;
+  top: 0; left: 0;
   letter-spacing: .3px;
 }
 
-/* ── Date Filter Bar ─────────────────────────────────────── */
-#date-filter-bar {
-  display: flex;
-  gap: 6px;
-  padding: 10px 0 14px;
-  flex-wrap: wrap;
-  align-items: center;
-}
-.date-tab {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  color: var(--dim);
-  border-radius: 6px;
-  padding: 5px 14px;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 600;
-  transition: all .15s;
-  white-space: nowrap;
-}
-.date-tab:hover { border-color: var(--blue); color: var(--text); }
-.date-tab.active { background: var(--blue); border-color: var(--blue); color: #fff; }
-.date-tab .tab-count {
-  font-size: 10px;
-  font-weight: 400;
-  margin-left: 4px;
-  opacity: .75;
-}
-
-/* ── Forecast reason box ─────────────────────────────────── */
-.forecast-reason {
-  font-size: 10px;
-  margin-top: 4px;
-  padding: 3px 6px;
-  border-radius: 3px;
-  line-height: 1.4;
-}
-.card:hover { border-color: var(--blue); transform: translateY(-1px); }
-.card.opportunity { border-left: 3px solid var(--green); }
-.card.no-edge     { border-left: 3px solid var(--border); opacity: .75; }
-
-/* Link icon on cards */
+/* Card header zone */
 .card-link-hint {
   position: absolute;
-  top: 10px;
-  right: 12px;
+  top: 18px;
+  right: 20px;
   font-size: 10px;
   color: var(--dim);
+  font-family: var(--mono);
   opacity: 0;
   transition: opacity .15s;
 }
@@ -233,100 +278,114 @@ main { display: grid; grid-template-columns: 1fr 300px; gap: 20px; padding: 20px
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 12px;
-  margin-bottom: 12px;
+  gap: 16px;
 }
 .card-question {
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 1.4;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.45;
   flex: 1;
+  color: var(--text);
+  padding-top: 2px;
 }
 .edge-badge {
-  font-size: 22px;
-  font-weight: 800;
+  font-family: var(--mono);
+  font-size: 26px;
+  font-weight: 700;
   color: var(--green);
   white-space: nowrap;
+  line-height: 1;
 }
 .edge-badge.negative { color: var(--red); }
 
-.card-meta { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+/* Tags row */
+.card-meta {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
 .tag {
   font-size: 11px;
-  padding: 2px 8px;
+  font-family: var(--mono);
+  padding: 3px 9px;
   border-radius: 4px;
-  border: 1px solid var(--border);
-  color: var(--dim);
+  border: 1px solid var(--border2);
+  color: var(--dim2);
+  white-space: nowrap;
 }
-.tag.action-buy  { border-color: var(--green); color: var(--green); font-weight: 700; }
-.tag.action-sell { border-color: var(--red);   color: var(--red);   font-weight: 700; }
-.tag.conviction-high   { border-color: var(--purple); color: var(--purple); }
-.tag.conviction-medium { border-color: var(--yellow); color: var(--yellow); }
+.tag.action-buy  { border-color: var(--green); color: var(--green); font-weight: 700; background: rgba(0,229,160,.06); }
+.tag.action-sell { border-color: var(--red);   color: var(--red);   font-weight: 700; background: rgba(255,77,109,.06); }
+.tag.conviction-high   { border-color: var(--purple); color: var(--purple); background: rgba(167,139,250,.06); }
+.tag.conviction-medium { border-color: var(--yellow); color: var(--yellow); background: rgba(245,166,35,.06); }
 .tag.conviction-low    { border-color: var(--dim);    color: var(--dim); }
 
-/* ── Probability Row ─────────────────────────────────────── */
+/* ── Prices Grid ─────────────────────────────────────────── */
 .prob-row {
   display: grid;
-  grid-template-columns: repeat(3,1fr);
-  gap: 6px;
-  margin-bottom: 10px;
+  gap: 8px;
+  margin: 0;
 }
 .prob-cell {
-  background: rgba(255,255,255,.03);
+  background: rgba(255,255,255,.025);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 8px;
+  border-radius: 8px;
+  padding: 12px 10px;
   text-align: center;
 }
-.prob-label { font-size: 10px; color: var(--dim); margin-bottom: 4px; }
-.prob-value { font-size: 18px; font-weight: 700; }
+.prob-label {
+  font-size: 9px;
+  color: var(--dim2);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: .8px;
+  font-family: var(--mono);
+}
+.prob-value {
+  font-size: 24px;
+  font-weight: 700;
+  font-family: var(--mono);
+  line-height: 1;
+}
 .prob-value.high  { color: var(--green); }
 .prob-value.mid   { color: var(--yellow); }
 .prob-value.low   { color: var(--red); }
+/* YES cell highlight */
+.prob-cell.yes-cell { border-color: rgba(0,229,160,.2); background: rgba(0,229,160,.04); }
+.prob-cell.no-cell  { border-color: rgba(255,77,109,.2); background: rgba(255,77,109,.04); }
 
 /* ── Model Consensus Row ─────────────────────────────────── */
 .consensus-row {
   display: flex;
   gap: 6px;
   align-items: center;
-  margin-bottom: 10px;
-  font-size: 12px;
+  flex-wrap: wrap;
+  font-size: 11px;
 }
 .model-badge {
-  padding: 2px 8px;
-  border-radius: 12px;
-  font-size: 11px;
-  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: var(--mono);
 }
-.model-badge.yes { background: rgba(34,197,94,.15); color: var(--green); }
-.model-badge.no  { background: rgba(239,68,68,.15);  color: var(--red); }
-.model-badge.na  { background: rgba(100,116,139,.15); color: var(--dim); }
-
-/* ── Kelly Sizing ────────────────────────────────────────── */
-.kelly-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  background: rgba(59,130,246,.08);
-  border: 1px solid rgba(59,130,246,.25);
-  border-radius: 6px;
-  padding: 8px 12px;
-}
-.kelly-label { font-size: 12px; color: var(--dim); }
-.kelly-amount { font-size: 16px; font-weight: 800; color: var(--blue); }
+.model-badge.yes { background: rgba(0,229,160,.12); color: var(--green); border: 1px solid rgba(0,229,160,.2); }
+.model-badge.no  { background: rgba(255,77,109,.12); color: var(--red);   border: 1px solid rgba(255,77,109,.2); }
+.model-badge.na  { background: rgba(74,82,128,.15);  color: var(--dim2);  border: 1px solid var(--border); }
 
 /* ── Spread Bar ──────────────────────────────────────────── */
 .spread-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 8px;
-  font-size: 11px;
-  color: var(--dim);
+  margin-top: 10px;
+  font-size: 10px;
+  color: var(--dim2);
+  font-family: var(--mono);
 }
 .spread-bar-track {
   flex: 1;
-  height: 4px;
+  height: 3px;
   background: var(--border);
   border-radius: 2px;
   overflow: hidden;
@@ -337,91 +396,146 @@ main { display: grid; grid-template-columns: 1fr 300px; gap: 20px; padding: 20px
   background: var(--yellow);
 }
 
+/* ── Kelly ───────────────────────────────────────────────── */
+.kelly-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.kelly-label { font-size: 11px; color: var(--dim2); font-family: var(--mono); }
+.kelly-amount {
+  font-family: var(--mono);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--blue);
+}
+
 /* ── Sidebar ─────────────────────────────────────────────── */
 .sidebar { display: flex; flex-direction: column; gap: 16px; }
 .widget {
-  background: var(--surface);
+  background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 16px;
+  border-radius: 12px;
+  padding: 18px;
 }
-.widget-title { font-size: 12px; font-weight: 700; color: var(--dim); margin-bottom: 12px; letter-spacing: .5px; }
-
-/* Brier Score Widget */
+.widget-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--dim2);
+  margin-bottom: 14px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  font-family: var(--mono);
+}
 .brier-score {
-  font-size: 40px;
+  font-size: 44px;
   font-weight: 800;
   text-align: center;
-  padding: 10px 0;
+  padding: 8px 0;
+  font-family: var(--mono);
 }
-.brier-score.good    { color: var(--green); }
-.brier-score.ok      { color: var(--yellow); }
-.brier-score.bad     { color: var(--red); }
-.brier-label { text-align: center; font-size: 11px; color: var(--dim); }
-
-/* Stats row */
-.stat-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+.brier-score.good { color: var(--green); }
+.brier-score.ok   { color: var(--yellow); }
+.brier-score.bad  { color: var(--red); }
+.brier-label { text-align: center; font-size: 11px; color: var(--dim2); }
+.stat-row { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--dim2); }
 .stat-row:last-child { border: none; }
-.stat-val { font-weight: 700; }
-
-/* Summary widget */
+.stat-val { font-weight: 700; color: var(--text); font-family: var(--mono); }
 .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .summary-cell {
-  background: rgba(255,255,255,.03);
+  background: rgba(255,255,255,.02);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 10px;
+  border-radius: 8px;
+  padding: 12px;
   text-align: center;
 }
-.summary-num { font-size: 24px; font-weight: 800; }
+.summary-num { font-size: 26px; font-weight: 800; font-family: var(--mono); }
 .summary-num.green  { color: var(--green); }
 .summary-num.yellow { color: var(--yellow); }
-.summary-lbl { font-size: 10px; color: var(--dim); margin-top: 2px; }
+.summary-lbl { font-size: 9px; color: var(--dim2); margin-top: 3px; text-transform: uppercase; letter-spacing: .5px; }
 
 /* ── Empty States ────────────────────────────────────────── */
 .empty {
   text-align: center;
-  padding: 40px;
-  color: var(--dim);
+  padding: 48px 24px;
+  color: var(--dim2);
 }
-.empty-icon { font-size: 36px; margin-bottom: 12px; }
+.empty-icon { font-size: 40px; margin-bottom: 14px; }
 
 /* ── Loading ─────────────────────────────────────────────── */
 .skeleton {
-  background: linear-gradient(90deg, var(--surface) 25%, var(--border) 50%, var(--surface) 75%);
+  background: linear-gradient(90deg, var(--card) 25%, var(--border) 50%, var(--card) 75%);
   background-size: 200% 100%;
   animation: shimmer 1.5s infinite;
-  border-radius: 6px;
-  height: 100px;
-  margin-bottom: 12px;
+  border-radius: 12px;
+  height: 180px;
+  margin-bottom: 24px;
 }
 @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
-/* ── Section toggle buttons ──────────────────────────────── */
+/* ── Section toggle ──────────────────────────────────────── */
 .section-toggle {
-  background: none;
+  background: transparent;
   border: 1px solid var(--border);
-  color: var(--dim);
+  color: var(--dim2);
   border-radius: 6px;
-  padding: 8px 16px;
+  padding: 9px 16px;
   cursor: pointer;
   width: 100%;
   text-align: left;
-  font-size: 12px;
-  margin-bottom: 8px;
+  font-size: 11px;
+  font-family: var(--mono);
+  margin-bottom: 12px;
+  transition: all .15s;
 }
-.section-toggle:hover { border-color: var(--blue); color: var(--text); }
+.section-toggle:hover { border-color: var(--border2); color: var(--text); }
 
 /* ── Skip badge ──────────────────────────────────────────── */
 .skip-reason {
-  font-size: 11px;
-  color: var(--dim);
-  background: rgba(100,116,139,.1);
+  font-size: 10px;
+  color: var(--dim2);
+  background: rgba(74,82,128,.1);
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 2px 8px;
   margin-top: 6px;
   display: inline-block;
+  font-family: var(--mono);
+}
+
+/* ── Date Filter Bar ─────────────────────────────────────── */
+#date-filter-bar {
+  display: flex;
+  gap: 6px;
+  padding: 0 0 18px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.date-tab {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--dim2);
+  border-radius: 6px;
+  padding: 5px 14px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--mono);
+  transition: all .15s;
+  white-space: nowrap;
+}
+.date-tab:hover { border-color: var(--border2); color: var(--text); }
+.date-tab.active { background: var(--blue); border-color: var(--blue); color: #fff; }
+.date-tab .tab-count { font-size: 9px; font-weight: 400; margin-left: 4px; opacity: .7; }
+
+/* ── Forecast reason ─────────────────────────────────────── */
+.forecast-reason {
+  font-size: 10px;
+  margin-top: 6px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  line-height: 1.5;
+  font-family: var(--mono);
 }
 
 /* ── History Section ─────────────────────────────────────── */
@@ -430,21 +544,21 @@ main { display: grid; grid-template-columns: 1fr 300px; gap: 20px; padding: 20px
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
-  margin-bottom: 16px;
+  margin-bottom: 18px;
 }
 .history-stat-pill {
   display: flex;
   flex-direction: column;
   align-items: center;
-  background: var(--surface);
+  background: var(--card);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 10px 20px;
-  min-width: 100px;
+  padding: 12px 22px;
+  min-width: 110px;
 }
-.history-stat-pill .pill-num  { font-size: 26px; font-weight: 800; }
-.history-stat-pill .pill-pct  { font-size: 13px; font-weight: 700; }
-.history-stat-pill .pill-lbl  { font-size: 10px; color: var(--dim); margin-top: 2px; }
+.history-stat-pill .pill-num  { font-size: 28px; font-weight: 800; font-family: var(--mono); }
+.history-stat-pill .pill-pct  { font-size: 13px; font-weight: 700; font-family: var(--mono); }
+.history-stat-pill .pill-lbl  { font-size: 10px; color: var(--dim2); margin-top: 3px; }
 .history-stat-pill.correct { border-color: var(--green); }
 .history-stat-pill.correct .pill-num { color: var(--green); }
 .history-stat-pill.correct .pill-pct { color: var(--green); }
@@ -1305,7 +1419,7 @@ function buildCard(r, isOpp, rank) {
       ? `<div style="margin-top:4px;font-size:10px;color:var(--yellow)">⚠ 實測溫度 ${obsC.toFixed(1)}°C 已超過模型預測 ${fcMaxC.toFixed(1)}°C — 以實測為準</div>`
       : '';
 
-    forecastLine = `<div style="font-size:11px;color:var(--dim);margin-top:10px;padding:8px 10px;background:rgba(59,130,246,.05);border-radius:6px;border:1px solid var(--border)">
+    forecastLine = `<div style="font-size:11px;color:var(--dim);padding:8px 10px;background:rgba(59,130,246,.05);border-radius:6px;border:1px solid var(--border)">
       🌤 模型預測最高溫：<b style="color:var(--text)">${fcMaxC.toFixed(1)}°C${fcMaxF ? ' / ' + fcMaxF.toFixed(1) + '°F' : ''}</b>
       ${rangeStr ? `<span style="margin-left:10px;color:var(--dim)">市場區間：<b style="color:var(--text)">${rangeStr}</b></span>` : ''}
       ${obsWarnLine}
@@ -1373,60 +1487,74 @@ function buildCard(r, isOpp, rank) {
   // ── Total sources count for models_agree display ───────────
   const totalSources = (cons.sources_used || []).length || 3;
 
+  const hasDataSection = !!(forecastLine || obsBox || (cons && (gfs_p != null || ecmwf_p != null || icon_p != null)));
+  const hasConsensus   = !!(cons && (gfs_p != null || ecmwf_p != null || icon_p != null));
+
   return `
 <${tag} class="card ${cardClass}" ${linkAttr}>
   ${top5Badge}
   ${linkHint ? `<span class="card-link-hint">${linkHint}</span>` : ''}
-  <div class="card-header">
-    <div class="card-question">${r.question || '—'}</div>
-    <div class="edge-badge ${edgeClass}">${r.edge != null ? edgeSign + pct(edge) : '—'}</div>
-  </div>
-  <div class="card-meta">
-    ${actionTag}
-    ${tempBadge}
-    ${r.conviction ? `<span class="tag ${convClass}">${convText}</span>` : ''}
-    <span class="tag">📍 ${locationTag}</span>
-    <span class="tag">📅 ${dateTag}</span>
-    ${timerBadge}
-    ${stationBadge}
-    ${isTempBucket ? '<span class="tag" style="color:var(--green);border-color:var(--green)">✓ 真實市場</span>' : isMock ? '<span class="tag" style="color:var(--yellow);border-color:var(--yellow)">Demo</span>' : ''}
-    ${wxLink}
-  </div>
-  <div class="prob-row" style="grid-template-columns:1fr 1fr 1fr 1fr;">
-    <div class="prob-cell">
-      <div class="prob-label">YES 價格</div>
-      <div class="prob-value ${probClass(mktYes)}">${pct(mktYes)}</div>
+
+  <div class="card-head"${top5Badge ? ' style="padding-top:28px"' : ''}>
+    <div class="card-header">
+      <div class="card-question">${r.question || '—'}</div>
+      <div class="edge-badge ${edgeClass}">${r.edge != null ? edgeSign + pct(edge) : '—'}</div>
     </div>
-    <div class="prob-cell">
-      <div class="prob-label">NO 價格</div>
-      <div class="prob-value ${probClass(mktNo != null ? 1-mktNo : null)}">${pct(mktNo)}</div>
-    </div>
-    <div class="prob-cell">
-      <div class="prob-label">模型概率 YES</div>
-      <div class="prob-value ${modClass}">${modDisplay}</div>
-    </div>
-    <div class="prob-cell">
-      <div class="prob-label">${totalSources}模型合意</div>
-      <div class="prob-value ${probClass((cons.models_agree||0)/totalSources)}">${cons.models_agree != null ? cons.models_agree + '/' + totalSources : '—'}</div>
+    <div class="card-meta">
+      ${actionTag}
+      ${tempBadge}
+      ${r.conviction ? `<span class="tag ${convClass}">${convText}</span>` : ''}
+      <span class="tag">📍 ${locationTag}</span>
+      <span class="tag">📅 ${dateTag}</span>
+      ${timerBadge}
+      ${stationBadge}
+      ${isTempBucket ? '<span class="tag" style="color:var(--green);border-color:var(--green)">✓ 真實市場</span>' : isMock ? '<span class="tag" style="color:var(--yellow);border-color:var(--yellow)">Demo</span>' : ''}
+      ${wxLink}
     </div>
   </div>
-  ${forecastLine}
-  ${obsBox}
-  ${cons && (gfs_p != null || ecmwf_p != null || icon_p != null) ? `
-  <div class="consensus-row">
-    ${modelBadge('GFS', gfs_p)}
-    ${modelBadge('ECMWF', ecmwf_p)}
-    ${modelBadge('ICON', icon_p)}
-    ${nws_p != null ? modelBadge('NWS', nws_p) : ''}
-    ${metno_p != null ? modelBadge('Met.no', metno_p) : ''}
-    <span style="color:var(--dim);margin-left:auto">Spread ${spreadPct}%</span>
+
+  <div class="card-section prices">
+    <div class="prob-row" style="grid-template-columns:1fr 1fr 1fr 1fr;">
+      <div class="prob-cell yes-cell">
+        <div class="prob-label">YES 價格</div>
+        <div class="prob-value ${probClass(mktYes)}">${pct(mktYes)}</div>
+      </div>
+      <div class="prob-cell no-cell">
+        <div class="prob-label">NO 價格</div>
+        <div class="prob-value ${probClass(mktNo != null ? 1-mktNo : null)}">${pct(mktNo)}</div>
+      </div>
+      <div class="prob-cell">
+        <div class="prob-label">模型概率 YES</div>
+        <div class="prob-value ${modClass}">${modDisplay}</div>
+      </div>
+      <div class="prob-cell">
+        <div class="prob-label">${totalSources}模型合意</div>
+        <div class="prob-value ${probClass((cons.models_agree||0)/totalSources)}">${cons.models_agree != null ? cons.models_agree + '/' + totalSources : '—'}</div>
+      </div>
+    </div>
   </div>
-  <div class="spread-row">
-    <span>不確定度</span>
-    <div class="spread-bar-track"><div class="spread-bar-fill" style="width:${spreadWidth}%"></div></div>
-    <span>${spread < 0.10 ? '低' : spread < 0.20 ? '中' : '高'}</span>
+
+  ${hasDataSection ? `
+  <div class="card-section data">
+    ${forecastLine}
+    ${obsBox}
+    ${hasConsensus ? `
+    <div class="consensus-row" style="margin-top:${forecastLine || obsBox ? '12px' : '0'}">
+      ${modelBadge('GFS', gfs_p)}
+      ${modelBadge('ECMWF', ecmwf_p)}
+      ${modelBadge('ICON', icon_p)}
+      ${nws_p != null ? modelBadge('NWS', nws_p) : ''}
+      ${metno_p != null ? modelBadge('Met.no', metno_p) : ''}
+      <span style="color:var(--dim);margin-left:auto">Spread ${spreadPct}%</span>
+    </div>
+    <div class="spread-row">
+      <span>不確定度</span>
+      <div class="spread-bar-track"><div class="spread-bar-fill" style="width:${spreadWidth}%"></div></div>
+      <span>${spread < 0.10 ? '低' : spread < 0.20 ? '中' : '高'}</span>
+    </div>` : ''}
   </div>` : ''}
-  ${kellyLine}
+
+  ${kellyLine ? `<div class="card-section kelly-section">${kellyLine}</div>` : ''}
 </${tag}>`;
 }
 
@@ -1609,10 +1737,12 @@ async function loadOpportunities(forceRefresh = false) {
       document.getElementById('skipped-list').innerHTML = skipped.map(r => {
         const reason = r.skip_reason || r.action || 'Unknown';
         return `<div class="card no-edge" style="opacity:.6">
-          <div class="card-header">
-            <div class="card-question" style="font-size:12px">${r.question || '—'}</div>
+          <div class="card-head">
+            <div class="card-header">
+              <div class="card-question" style="font-size:12px">${r.question || '—'}</div>
+            </div>
+            <div><span class="skip-reason">⊘ ${reason}</span></div>
           </div>
-          <div><span class="skip-reason">⊘ ${reason}</span></div>
         </div>`;
       }).join('');
     }
