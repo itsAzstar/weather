@@ -917,39 +917,50 @@ function _filterByActive(arr, dateStr) {
   return arr.filter(r => _getCardDate(r) === dateStr);
 }
 
+function _renderOppList(opps, isSoon) {
+  const now = Date.now();
+  let list = [...opps];
+  if (isSoon) list.sort((a, b) => (_getEndMs(a) ?? Infinity) - (_getEndMs(b) ?? Infinity));
+  const active = list.filter(r => (_getEndMs(r) ?? Infinity) >= now);
+  const ended  = list.filter(r => (_getEndMs(r) ?? Infinity) <  now);
+  let html = active.map((r, i) => buildCard(r, true, i + 1)).join('');
+  if (ended.length > 0) {
+    html += `<div style="margin:16px 0 10px;padding:8px 12px;background:rgba(100,116,139,.08);border-radius:6px;border:1px solid var(--border);font-size:11px;color:var(--dim);font-weight:600;letter-spacing:.5px">
+      ⊘ 以下市場已截止（僅供參考）
+    </div>`;
+    html += ended.map(r => buildCard(r, true, null)).join('');
+  }
+  return html;
+}
+
 function applyDateFilter(dateStr) {
   _activeDate = dateStr;
   renderDateFilter(_allOpportunities, _allNoEdge);
 
-  const filteredOpps    = _filterByActive(_allOpportunities, dateStr);
-  const filteredNoEdge  = _filterByActive(_allNoEdge,        dateStr);
-  const isSoon          = dateStr.startsWith('soon-');
+  const filteredOpps   = _filterByActive(_allOpportunities, dateStr);
+  const filteredNoEdge = _filterByActive(_allNoEdge,        dateStr);
+  const isSoon         = dateStr.startsWith('soon-');
 
   // ── Opportunities ──
   const oppList = document.getElementById('opportunities-list');
   if (filteredOpps.length === 0) {
     const noEdgeCount = filteredNoEdge.length;
     const hint = isSoon
-      ? (noEdgeCount > 0 ? `有 ${noEdgeCount} 個市場即將結束但 Edge < 5%，往下查看 ↓` : '目前無即將結束的套利機會')
-      : (noEdgeCount > 0 ? `找到 ${noEdgeCount} 個市場，但 Edge < 5%，往下查看 ↓` : '此日期無可評估的市場');
-    oppList.innerHTML = `<div class="empty"><div class="empty-icon">📊</div><div>無超過 5% Edge 的機會</div>
+      ? (noEdgeCount > 0 ? `有 ${noEdgeCount} 個市場即將結束但 Edge < 8%，往下查看 ↓` : '目前無即將結束的套利機會')
+      : (noEdgeCount > 0 ? `找到 ${noEdgeCount} 個市場，但 Edge < 8%，往下查看 ↓` : '此日期無可評估的市場');
+    oppList.innerHTML = `<div class="empty"><div class="empty-icon">📊</div><div>無超過 8% Edge 的機會</div>
       <div style="margin-top:8px;font-size:12px;color:var(--yellow)">${hint}</div></div>`;
   } else {
-    // Sort "soon" views by end_date ascending (most urgent first)
-    let renderList = [...filteredOpps];
-    if (isSoon) renderList.sort((a, b) => (_getEndMs(a)||Infinity) - (_getEndMs(b)||Infinity));
-    const soonHeader = isSoon
-      ? `<div class="soon-divider">⚡ 即將截止 — 按剩餘時間排序</div>` : '';
-    oppList.innerHTML = soonHeader + renderList.map((r, i) => buildCard(r, true, i+1)).join('');
+    const soonHeader = isSoon ? `<div class="soon-divider">⚡ 即將截止 — 按剩餘時間排序</div>` : '';
+    oppList.innerHTML = soonHeader + _renderOppList(filteredOpps, isSoon);
   }
 
   // ── No-edge ──
   let renderNoEdge = [...filteredNoEdge];
-  if (isSoon) renderNoEdge.sort((a, b) => (_getEndMs(a)||Infinity) - (_getEndMs(b)||Infinity));
+  if (isSoon) renderNoEdge.sort((a, b) => (_getEndMs(a) ?? Infinity) - (_getEndMs(b) ?? Infinity));
   document.getElementById('no-edge-count').textContent = renderNoEdge.length;
   document.getElementById('no-edge-list').innerHTML    = renderNoEdge.map(r => buildCard(r, false)).join('');
 
-  // Start/restart live countdown timers
   startTimers();
 }
 
@@ -1225,6 +1236,7 @@ function buildCard(r, isOpp, rank) {
     : '';
 
   const mktYes = r.market_price_yes;
+  const mktNo  = r.market_price_no ?? (mktYes != null ? +(1 - mktYes).toFixed(4) : null);
   const modYes = r.consensus_prob || r.model_probability;
 
   // Show model prob even if no consensus yet
@@ -1262,28 +1274,41 @@ function buildCard(r, isOpp, rank) {
     if (lo_c != null && hi_c != null) rangeStr = `${fmtC(lo_c)}–${fmtC(hi_c)}°C`;
     else if (lo_c != null) rangeStr = `≥${fmtC(lo_c)}°C`;
     else if (hi_c != null) rangeStr = `≤${fmtC(hi_c)}°C`;
-    // Build reason
+
+    // Use obs temp if it already exceeds forecast (obs is real, forecast is lagging)
+    const obsC = r.obs_temp_c;
+    const effectiveMaxC = (obsC != null && obsC > fcMaxC) ? obsC : fcMaxC;
+    const obsOverride   = (obsC != null && obsC > fcMaxC);
+
+    // Build reason using the effective (higher of forecast vs obs)
     let reasonHtml = '';
     if (lo_c != null || hi_c != null) {
-      const belowLo = lo_c != null && fcMaxC < lo_c;
-      const aboveHi = hi_c != null && fcMaxC > hi_c;
+      const belowLo = lo_c != null && effectiveMaxC < lo_c;
+      const aboveHi = hi_c != null && effectiveMaxC > hi_c;
+      const src = obsOverride ? `實測 ${obsC.toFixed(1)}°C（已超預測）` : `預測 ${fcMaxC.toFixed(1)}°C`;
       if (belowLo) {
         reasonHtml = `<div class="forecast-reason" style="background:rgba(239,68,68,.08);color:var(--red)">
-          ↳ 預測 ${fcMaxC.toFixed(1)}°C <b>低於</b>區間下限 ${fmtC(lo_c)}°C，模型認為此區間機率偏低 → 建議 BUY NO
+          ↳ ${src} <b>低於</b>區間下限 ${fmtC(lo_c)}°C → 建議 BUY NO
         </div>`;
       } else if (aboveHi) {
         reasonHtml = `<div class="forecast-reason" style="background:rgba(239,68,68,.08);color:var(--red)">
-          ↳ 預測 ${fcMaxC.toFixed(1)}°C <b>高於</b>區間上限 ${fmtC(hi_c)}°C，模型認為此區間機率偏低 → 建議 BUY NO
+          ↳ ${src} <b>高於</b>區間上限 ${fmtC(hi_c)}°C，今日最高已確定超出此區間 → 建議 BUY NO
         </div>`;
       } else {
         reasonHtml = `<div class="forecast-reason" style="background:rgba(34,197,94,.08);color:var(--green)">
-          ↳ 預測 ${fcMaxC.toFixed(1)}°C 落在區間 [${rangeStr}] 內，模型認為機率較高 → 建議 BUY YES
+          ↳ ${src} 落在區間 [${rangeStr}] 內 → 建議 BUY YES
         </div>`;
       }
     }
+
+    const obsWarnLine = obsOverride
+      ? `<div style="margin-top:4px;font-size:10px;color:var(--yellow)">⚠ 實測溫度 ${obsC.toFixed(1)}°C 已超過模型預測 ${fcMaxC.toFixed(1)}°C — 以實測為準</div>`
+      : '';
+
     forecastLine = `<div style="font-size:11px;color:var(--dim);margin-top:10px;padding:8px 10px;background:rgba(59,130,246,.05);border-radius:6px;border:1px solid var(--border)">
-      🌤 氣象預測最高溫：<b style="color:var(--text)">${fcMaxC.toFixed(1)}°C${fcMaxF ? ' / ' + fcMaxF.toFixed(1) + '°F' : ''}</b>
+      🌤 模型預測最高溫：<b style="color:var(--text)">${fcMaxC.toFixed(1)}°C${fcMaxF ? ' / ' + fcMaxF.toFixed(1) + '°F' : ''}</b>
       ${rangeStr ? `<span style="margin-left:10px;color:var(--dim)">市場區間：<b style="color:var(--text)">${rangeStr}</b></span>` : ''}
+      ${obsWarnLine}
       ${reasonHtml}
     </div>`;
   }
@@ -1367,18 +1392,22 @@ function buildCard(r, isOpp, rank) {
     ${isTempBucket ? '<span class="tag" style="color:var(--green);border-color:var(--green)">✓ 真實市場</span>' : isMock ? '<span class="tag" style="color:var(--yellow);border-color:var(--yellow)">Demo</span>' : ''}
     ${wxLink}
   </div>
-  <div class="prob-row">
+  <div class="prob-row" style="grid-template-columns:1fr 1fr 1fr 1fr;">
     <div class="prob-cell">
-      <div class="prob-label">市場價格</div>
+      <div class="prob-label">YES 價格</div>
       <div class="prob-value ${probClass(mktYes)}">${pct(mktYes)}</div>
     </div>
     <div class="prob-cell">
-      <div class="prob-label">模型概率</div>
+      <div class="prob-label">NO 價格</div>
+      <div class="prob-value ${probClass(mktNo != null ? 1-mktNo : null)}">${pct(mktNo)}</div>
+    </div>
+    <div class="prob-cell">
+      <div class="prob-label">模型概率 YES</div>
       <div class="prob-value ${modClass}">${modDisplay}</div>
     </div>
     <div class="prob-cell">
       <div class="prob-label">${totalSources}模型合意</div>
-      <div class="prob-value ${probClass((cons.models_agree||0)/totalSources)}">${cons.models_agree != null ? cons.models_agree + '/' + totalSources : (isTempBucket ? '—*' : '—')}</div>
+      <div class="prob-value ${probClass((cons.models_agree||0)/totalSources)}">${cons.models_agree != null ? cons.models_agree + '/' + totalSources : '—'}</div>
     </div>
   </div>
   ${forecastLine}
@@ -1562,50 +1591,15 @@ async function loadOpportunities(forceRefresh = false) {
     }
     _allOpportunities = (d.opportunities || []).slice().sort(_byEndTime);
     _allNoEdge        = (d.no_edge || []).slice().sort(_byEndTime);
-    _activeDate       = 'all';
+    // Preserve current date selection across auto-refreshes; only reset on manual refresh
+    if (forceRefresh) _activeDate = 'all';
 
-    // Render date filter tabs
-    renderDateFilter(_allOpportunities, _allNoEdge);
+    // Render everything via applyDateFilter (preserves current tab selection)
+    applyDateFilter(_activeDate);
 
-    // Opportunities
-    const oppList = document.getElementById('opportunities-list');
-    if (_allOpportunities.length === 0) {
-      const noEdgeCount = _allNoEdge.length;
-      const hint = noEdgeCount > 0
-        ? `掃到 ${noEdgeCount} 個市場，但模型 vs 市場差距 &lt; ${((d.edge_threshold||0.05)*100).toFixed(0)}%，往下查看 ↓`
-        : '找不到可評估的市場';
-      oppList.innerHTML = `
-        <div class="empty">
-          <div class="empty-icon">📊</div>
-          <div>無超過 ${((d.edge_threshold||0.05)*100).toFixed(0)}% Edge 的機會</div>
-          <div style="margin-top:8px;font-size:12px;color:var(--yellow)">${hint}</div>
-          <div id="next-refresh" style="margin-top:6px;font-size:11px;color:var(--dim)">下次自動掃描：60s 後</div>
-        </div>`;
-    } else {
-      // Split active vs ended, rank only active ones
-      const activeOpps = _allOpportunities.filter(r => (_getEndMs(r) ?? Infinity) >= _now);
-      const endedOpps  = _allOpportunities.filter(r => (_getEndMs(r) ?? Infinity) <  _now);
-      let html = activeOpps.map((r, i) => buildCard(r, true, i + 1)).join('');
-      if (endedOpps.length > 0) {
-        html += `<div style="margin:16px 0 10px;padding:8px 12px;background:rgba(100,116,139,.08);border-radius:6px;border:1px solid var(--border);font-size:11px;color:var(--dim);font-weight:600;letter-spacing:.5px">
-          ⊘ 以下市場已截止（僅供參考）
-        </div>`;
-        html += endedOpps.map(r => buildCard(r, true, null)).join('');
-      }
-      oppList.innerHTML = html;
-    }
-
-    // No-edge (default expanded)
-    const neCount = _allNoEdge.length;
-    document.getElementById('no-edge-count').textContent = neCount;
-    const neList = document.getElementById('no-edge-list');
-    neList.innerHTML = _allNoEdge.map(r => buildCard(r, false)).join('');
     // Keep no-edge section visible
     document.getElementById('no-edge-section').style.display = 'block';
     document.getElementById('no-edge-arrow').textContent = '▾';
-
-    // Start live countdown timers on all cards
-    startTimers();
 
     // Skipped markets
     const skipped = d.skipped || [];
