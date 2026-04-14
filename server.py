@@ -351,6 +351,20 @@ def _warm_cache():
     threading.Thread(target=_bg_resolver, daemon=True).start()
     print("[Scheduler] Background resolution scheduler started (every 10 min)")
 
+    # 3. Background auto-scanner: refresh market data every 3 minutes
+    #    Ensures predictions are logged even when no one has the dashboard open.
+    def _bg_scanner():
+        time.sleep(60)   # Let server fully start + pre-warm finish first
+        while True:
+            try:
+                api_opportunities(refresh=True)
+                print(f"[Scheduler] Auto-scan complete")
+            except Exception as e:
+                print(f"[Scheduler] Auto-scan error: {e}")
+            time.sleep(3 * 60)   # Every 3 minutes
+    threading.Thread(target=_bg_scanner, daemon=True).start()
+    print("[Scheduler] Auto-scanner started (every 3 min)")
+
 
 if __name__ == "__main__":
     import sys, os
