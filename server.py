@@ -205,13 +205,20 @@ def api_opportunities(refresh: bool = False):
         no_edge = sorted(no_edge, key=lambda r: abs(r.get("edge") or 0), reverse=True)
 
         # 序列化：移除不可 JSON 的欄位
+        # New primitive fields passed through automatically:
+        #   station_icao (str), station_name (str), obs_temp_c (float), obs_temp_f (float),
+        #   obs_age_min (float), time_remaining_hours (float), obs_adjusted (bool)
         def _clean(r: dict) -> dict:
             out = {}
             for k, v in r.items():
                 if k == "consensus" and isinstance(v, dict):
+                    # Pass consensus dict through fully (includes sources_used list)
                     out[k] = v
                 elif isinstance(v, (str, int, float, bool, type(None))):
                     out[k] = v
+                elif isinstance(v, list) and k in ("sources_used",):
+                    # Allow specific list fields through
+                    out[k] = [x for x in v if isinstance(x, str)]
                 elif isinstance(v, dict):
                     out[k] = {kk: vv for kk, vv in v.items()
                               if isinstance(vv, (str, int, float, bool, type(None)))}

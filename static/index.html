@@ -523,6 +523,24 @@ main { display: grid; grid-template-columns: 1fr 300px; gap: 20px; padding: 20px
   transition: background .12s;
 }
 .wx-link:hover { background: rgba(59,130,246,.1); }
+
+/* ── Obs Box (current station observation) ───────────────── */
+.obs-box {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  background: rgba(168,85,247,.05);
+  line-height: 1.5;
+}
+.obs-box .obs-reason {
+  margin-top: 4px;
+  padding: 3px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  line-height: 1.4;
+}
 </style>
 </head>
 <body>
@@ -1024,6 +1042,8 @@ function buildCard(r, isOpp, rank) {
   const gfs_p  = cons.gfs;
   const ecmwf_p = cons.ecmwf;
   const icon_p  = cons.icon;
+  const nws_p   = cons.nws;
+  const metno_p = cons.metno;
 
   const edgeSign = edge >= 0 ? '+' : '';
   const edgeClass = edge >= 0 ? '' : 'negative';
@@ -1129,6 +1149,49 @@ function buildCard(r, isOpp, rank) {
     ? `<a class="wx-link" href="${wxSite.url}" target="_blank" rel="noopener">📡 ${wxSite.name}</a>`
     : '';
 
+  // ── Station badge ──────────────────────────────────────────
+  const stationBadge = r.station_icao
+    ? `<span class="tag" style="color:var(--purple);border-color:var(--purple)">📡 ${r.station_icao}${r.station_name && r.station_name !== r.station_icao ? ' — ' + r.station_name : ''}</span>`
+    : '';
+
+  // ── Current obs box ────────────────────────────────────────
+  let obsBox = '';
+  if (r.obs_temp_c != null) {
+    const ageStr   = r.obs_age_min != null ? Math.round(r.obs_age_min) + 'min前' : '';
+    const remStr   = r.time_remaining_hours != null ? r.time_remaining_hours.toFixed(1) + 'h' : '';
+    const tempF    = r.obs_temp_f != null ? ' / ' + r.obs_temp_f.toFixed(1) + '°F' : '';
+
+    // Reason text based on bucket position
+    let reasonHtml = '';
+    if (isTempBucket && r.obs_adjusted) {
+      const tb    = r.temp_bucket || {};
+      const lo_c  = tb.lo_c;
+      const hi_c  = tb.hi_c;
+      const obs_c = r.obs_temp_c;
+      if (hi_c != null && obs_c > hi_c) {
+        reasonHtml = `<div class="obs-reason" style="background:rgba(239,68,68,.08);color:var(--red)">
+          ↳ 實測溫度已超過區間上限 ${hi_c}°C，今日最高溫幾乎確定超出此區間 → 建議 BUY NO
+        </div>`;
+      } else if (lo_c != null && obs_c >= lo_c && (hi_c == null || obs_c < hi_c) && r.time_remaining_hours < 4.0) {
+        reasonHtml = `<div class="obs-reason" style="background:rgba(34,197,94,.08);color:var(--green)">
+          ↳ 實測溫度 ${obs_c}°C 已在區間內，剩餘時間 ${remStr}，今日最高溫大概率維持在此區間
+        </div>`;
+      } else if (lo_c != null && obs_c < lo_c && r.time_remaining_hours < 3.0) {
+        reasonHtml = `<div class="obs-reason" style="background:rgba(239,68,68,.08);color:var(--yellow)">
+          ↳ 實測溫度 ${obs_c}°C 低於區間下限 ${lo_c}°C，剩餘 ${remStr}，進入此區間概率已降低
+        </div>`;
+      }
+    }
+
+    obsBox = `<div class="obs-box">
+      🌡 <b>當前站點實測</b>：<b>${r.obs_temp_c.toFixed(1)}°C${tempF}</b>${ageStr ? `  (${ageStr})` : ''}${remStr ? `  ⏱ 剩餘 ${remStr}` : ''}
+      ${reasonHtml}
+    </div>`;
+  }
+
+  // ── Total sources count for models_agree display ───────────
+  const totalSources = (cons.sources_used || []).length || 3;
+
   return `
 <${tag} class="card ${cardClass}" ${linkAttr}>
   ${top5Badge}
@@ -1143,6 +1206,7 @@ function buildCard(r, isOpp, rank) {
     ${r.conviction ? `<span class="tag ${convClass}">${convText}</span>` : ''}
     <span class="tag">📍 ${locationTag}</span>
     <span class="tag">📅 ${dateTag}</span>
+    ${stationBadge}
     ${isTempBucket ? '<span class="tag" style="color:var(--green);border-color:var(--green)">✓ 真實市場</span>' : isMock ? '<span class="tag" style="color:var(--yellow);border-color:var(--yellow)">Demo</span>' : ''}
     ${wxLink}
   </div>
@@ -1156,16 +1220,19 @@ function buildCard(r, isOpp, rank) {
       <div class="prob-value ${modClass}">${modDisplay}</div>
     </div>
     <div class="prob-cell">
-      <div class="prob-label">3模型合意</div>
-      <div class="prob-value ${probClass((cons.models_agree||0)/3)}">${cons.models_agree != null ? cons.models_agree + '/3' : (isTempBucket ? '—*' : '—')}</div>
+      <div class="prob-label">${totalSources}模型合意</div>
+      <div class="prob-value ${probClass((cons.models_agree||0)/totalSources)}">${cons.models_agree != null ? cons.models_agree + '/' + totalSources : (isTempBucket ? '—*' : '—')}</div>
     </div>
   </div>
   ${forecastLine}
+  ${obsBox}
   ${cons && (gfs_p != null || ecmwf_p != null || icon_p != null) ? `
   <div class="consensus-row">
     ${modelBadge('GFS', gfs_p)}
     ${modelBadge('ECMWF', ecmwf_p)}
     ${modelBadge('ICON', icon_p)}
+    ${nws_p != null ? modelBadge('NWS', nws_p) : ''}
+    ${metno_p != null ? modelBadge('Met.no', metno_p) : ''}
     <span style="color:var(--dim);margin-left:auto">Spread ${spreadPct}%</span>
   </div>
   <div class="spread-row">
