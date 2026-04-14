@@ -122,11 +122,25 @@ def _run_scan() -> list[dict]:
                 try:
                     target_str = parsed.get("target_date")
                     target_date = date.fromisoformat(target_str) if target_str else today
+                    # For temperature_bucket markets, pass bucket bounds directly to
+                    # consensus so it can compute P(lo ≤ max_temp ≤ hi) properly.
+                    # The parser only extracts a single threshold value (e.g. the first
+                    # number in "62-63°F"), so we must override with the actual bucket.
+                    event_type_cons = parsed.get("event_type", "rain")
+                    threshold_cons  = parsed.get("threshold")
+                    temp_bucket = r.get("temp_bucket")
+                    if temp_bucket and r.get("market_subtype") == "temperature_bucket":
+                        event_type_cons = "temperature_bucket"
+                        threshold_cons  = {
+                            "lo_c": temp_bucket.get("lo_c"),
+                            "hi_c": temp_bucket.get("hi_c"),
+                        }
+
                     cons = get_consensus(
                         lat=coords[0], lon=coords[1],
                         target_date=target_date,
-                        event_type=parsed.get("event_type", "rain"),
-                        threshold=parsed.get("threshold"),
+                        event_type=event_type_cons,
+                        threshold=threshold_cons,
                         direction=parsed.get("direction", "any"),
                     )
                     r["consensus"]      = cons

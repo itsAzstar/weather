@@ -1422,11 +1422,14 @@ function buildCard(r, isOpp, rank) {
 
   const mktYes = r.market_price_yes;
   const mktNo  = r.market_price_no ?? (mktYes != null ? +(1 - mktYes).toFixed(4) : null);
-  const modYes = r.consensus_prob || r.model_probability;
+  // "模型概率" in the price bar = model_probability from comparator.py
+  // This is the probability that was actually used to compute the edge and drive the action.
+  // consensus_prob (from the 5-model consensus) is shown in the model badges below.
+  // Showing consensus_prob here would be misleading when it differs from model_probability.
+  const modYes = r.model_probability;
 
-  // Show model prob even if no consensus yet
-  const modDisplay = modYes != null ? pct(modYes) : (r.model_probability != null ? pct(r.model_probability) + '*' : '—');
-  const modClass   = modYes != null ? probClass(modYes) : probClass(r.model_probability);
+  const modDisplay = modYes != null ? pct(modYes) : '—';
+  const modClass   = probClass(modYes);
 
   const isMock   = r.source === 'mock';
   const isTempBucket = r.market_subtype === 'temperature_bucket';
@@ -1460,25 +1463,48 @@ function buildCard(r, isOpp, rank) {
     else if (lo_c != null) rangeStr = `≥${fmtC(lo_c)}°C`;
     else if (hi_c != null) rangeStr = `≤${fmtC(hi_c)}°C`;
 
-    // Use obs temp if it already exceeds forecast (obs is real, forecast is lagging)
+    // Use obs as effective max ONLY when the day is nearly over (obs ≈ day max).
+    // With >4h remaining the current obs is just the current temp, not the day peak.
     const obsC = r.obs_temp_c;
-    const effectiveMaxC = (obsC != null && obsC > fcMaxC) ? obsC : fcMaxC;
-    const obsOverride   = (obsC != null && obsC > fcMaxC);
+    const nearEndOfDay = r.time_remaining_hours != null && r.time_remaining_hours < 4.0;
+    const effectiveMaxC = (obsC != null && obsC > fcMaxC && nearEndOfDay) ? obsC : fcMaxC;
+    const obsOverride   = (obsC != null && obsC > fcMaxC && nearEndOfDay);
 
-    // Build reason using the effective (higher of forecast vs obs)
+    // Build reason using the effective max.
+    // Only add explicit BUY recommendation if day is nearly over (obs is definitive).
+    // With >4h left, show the gap informatively without contradicting the backend action.
     let reasonHtml = '';
     if (lo_c != null || hi_c != null) {
       const belowLo = lo_c != null && effectiveMaxC < lo_c;
       const aboveHi = hi_c != null && effectiveMaxC > hi_c;
       const src = obsOverride ? `實測 ${obsC.toFixed(1)}°C（已超預測）` : `預測 ${fcMaxC.toFixed(1)}°C`;
+      const remStr = r.time_remaining_hours != null ? `，剩 ${r.time_remaining_hours.toFixed(1)}h` : '';
       if (belowLo) {
-        reasonHtml = `<div class="forecast-reason" style="background:rgba(239,68,68,.08);color:var(--red)">
-          ↳ ${src} <b>低於</b>區間下限 ${fmtC(lo_c)}°C → 建議 BUY NO
-        </div>`;
+        if (nearEndOfDay) {
+          reasonHtml = `<div class="forecast-reason" style="background:rgba(239,68,68,.08);color:var(--red)">
+            ↳ ${src} <b>低於</b>區間下限 ${fmtC(lo_c)}°C → 建議 BUY NO
+          </div>`;
+        } else {
+          // Obs is just current temp — still time to rise. Show gap, no override recommendation.
+          const gapC = (lo_c - effectiveMaxC).toFixed(1);
+          const obsSrc = (obsC != null && obsC > fcMaxC)
+            ? `實測 ${obsC.toFixed(1)}°C 已超預測，`
+            : '';
+          reasonHtml = `<div class="forecast-reason" style="background:rgba(232,168,76,.06);color:var(--yellow)">
+            ↳ ${obsSrc}預測最高 ${fcMaxC.toFixed(1)}°C，距下限 ${fmtC(lo_c)}°C 差 ${gapC}°C${remStr}
+          </div>`;
+        }
       } else if (aboveHi) {
-        reasonHtml = `<div class="forecast-reason" style="background:rgba(239,68,68,.08);color:var(--red)">
-          ↳ ${src} <b>高於</b>區間上限 ${fmtC(hi_c)}°C，今日最高已確定超出此區間 → 建議 BUY NO
-        </div>`;
+        if (nearEndOfDay) {
+          reasonHtml = `<div class="forecast-reason" style="background:rgba(239,68,68,.08);color:var(--red)">
+            ↳ ${src} <b>高於</b>區間上限 ${fmtC(hi_c)}°C，今日最高已確定超出此區間 → 建議 BUY NO
+          </div>`;
+        } else {
+          const gapC = (effectiveMaxC - hi_c).toFixed(1);
+          reasonHtml = `<div class="forecast-reason" style="background:rgba(232,168,76,.06);color:var(--yellow)">
+            ↳ 預測最高 ${fcMaxC.toFixed(1)}°C，超出上限 ${fmtC(hi_c)}°C ${gapC}°C${remStr}
+          </div>`;
+        }
       } else {
         reasonHtml = `<div class="forecast-reason" style="background:rgba(34,197,94,.08);color:var(--green)">
           ↳ ${src} 落在區間 [${rangeStr}] 內 → 建議 BUY YES

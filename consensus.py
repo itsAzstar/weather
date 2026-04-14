@@ -164,6 +164,23 @@ def _model_prob_from_day(day: dict, event_type: str, threshold: Optional[dict], 
         prob = 1.0 - _rain_prob_from_day(day)
         return round(prob, 3)
 
+    elif event_type == "temperature_bucket":
+        # Temperature bucket: P(lo_c ≤ max_temp ≤ hi_c) via normal CDF
+        # Uses same approach as comparator._temp_bucket_model_prob but without obs adjustment
+        import math
+        def _ncdf(x: float) -> float:
+            return 0.5 * (1.0 + math.erf(x / math.sqrt(2)))
+
+        lo_c = (threshold or {}).get("lo_c")
+        hi_c = (threshold or {}).get("hi_c")
+        t_max = day.get("temp_max_c")
+        if t_max is None or (lo_c is None and hi_c is None):
+            return None
+        sigma = 2.5   # realistic GFS daily-max RMSE
+        lo_cdf = _ncdf((lo_c - t_max) / sigma) if lo_c is not None else 0.0
+        hi_cdf = _ncdf((hi_c - t_max) / sigma) if hi_c is not None else 1.0
+        return max(0.01, min(0.99, round(hi_cdf - lo_cdf, 3)))
+
     return None
 
 
