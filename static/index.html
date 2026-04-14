@@ -524,6 +524,64 @@ main { display: grid; grid-template-columns: 1fr 300px; gap: 20px; padding: 20px
 }
 .wx-link:hover { background: rgba(59,130,246,.1); }
 
+/* ── Timer Badge ─────────────────────────────────────────── */
+.timer-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .3px;
+  white-space: nowrap;
+}
+.timer-badge.urgent {
+  background: rgba(239,68,68,.15);
+  color: var(--red);
+  border: 1px solid rgba(239,68,68,.35);
+  animation: pulse-red 1.2s ease-in-out infinite;
+}
+.timer-badge.warning {
+  background: rgba(234,179,8,.12);
+  color: var(--yellow);
+  border: 1px solid rgba(234,179,8,.35);
+}
+.timer-badge.ok {
+  background: rgba(34,197,94,.07);
+  color: var(--green);
+  border: 1px solid rgba(34,197,94,.25);
+}
+.timer-badge.done {
+  background: rgba(100,116,139,.12);
+  color: var(--dim);
+  border: 1px solid var(--border);
+}
+@keyframes pulse-red {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: .55; }
+}
+
+/* ── "Ending Soon" section header ────────────────────────── */
+.soon-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--red);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .8px;
+  text-transform: uppercase;
+  margin: 4px 0 10px;
+}
+.soon-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(239,68,68,.25);
+}
+
 /* ── Obs Box (current station observation) ───────────────── */
 .obs-box {
   margin-top: 8px;
@@ -735,6 +793,55 @@ let autoRefreshTimer = null;
 let _allOpportunities = [];
 let _allNoEdge = [];
 let _activeDate = 'all';
+let _timerInterval = null;
+
+// ── Timer system ───────────────────────────────────────────
+function formatTimeLeft(ms) {
+  if (ms <= 0) return { text: '已結束', cls: 'done' };
+  const totalSec = Math.floor(ms / 1000);
+  const d = Math.floor(totalSec / 86400);
+  const h = Math.floor((totalSec % 86400) / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (d > 0) return { text: `${d}d ${h}h`, cls: 'ok' };
+  if (h >= 6) return { text: `${h}h ${m}m`, cls: 'ok' };
+  if (h >= 1) return { text: `${h}h ${String(m).padStart(2,'0')}m`, cls: 'warning' };
+  if (m >= 1) return { text: `${m}m ${String(s).padStart(2,'0')}s`, cls: 'urgent' };
+  return { text: `${s}s`, cls: 'urgent' };
+}
+
+function startTimers() {
+  if (_timerInterval) clearInterval(_timerInterval);
+  function tick() {
+    document.querySelectorAll('[data-end-ts]').forEach(el => {
+      const endTs = parseInt(el.dataset.endTs, 10);
+      const { text, cls } = formatTimeLeft(endTs - Date.now());
+      el.textContent = '⏱ ' + text;
+      el.className = 'timer-badge ' + cls;
+    });
+  }
+  tick();
+  _timerInterval = setInterval(tick, 1000);
+}
+
+// ── "Ending soon" filter helpers ───────────────────────────
+function _getEndMs(r) {
+  const s = r.end_date || '';
+  return s ? new Date(s).getTime() : null;
+}
+
+function _matchSoonFilter(r, filter) {
+  const endMs = _getEndMs(r);
+  if (!endMs) return false;
+  const ms = endMs - Date.now();
+  if (filter === 'soon-2h')    return ms > 0 && ms < 2 * 3600000;
+  if (filter === 'soon-6h')    return ms > 0 && ms < 6 * 3600000;
+  if (filter === 'soon-today') {
+    const todayEnd = new Date(); todayEnd.setHours(23,59,59,999);
+    return ms > 0 && endMs <= todayEnd.getTime();
+  }
+  return false;
+}
 
 // ── Date Filter ────────────────────────────────────────────
 function _getDateLabel(d) {
@@ -759,49 +866,86 @@ function _buildDateCounts(opps, noEdge) {
 function renderDateFilter(opps, noEdge) {
   const bar = document.getElementById('date-filter-bar');
   if (!bar) return;
+  const all = [...opps, ...noEdge];
+
+  // "Ending soon" counts (live, recalculated each render)
+  const soon2h    = all.filter(r => _matchSoonFilter(r, 'soon-2h')).length;
+  const soon6h    = all.filter(r => _matchSoonFilter(r, 'soon-6h')).length;
+  const soonToday = all.filter(r => _matchSoonFilter(r, 'soon-today')).length;
+
   const counts = _buildDateCounts(opps, noEdge);
   const dates  = Object.keys(counts).sort();
-  if (dates.length <= 1) { bar.innerHTML = ''; return; }
+  const total  = opps.length + noEdge.length;
 
-  const total = opps.length + noEdge.length;
-  let html = `<button class="date-tab${_activeDate==='all'?' active':''}" onclick="applyDateFilter('all')">全部 <span class="tab-count">${total}</span></button>`;
+  function tab(filter, label, count, extra = '') {
+    const active = _activeDate === filter ? ' active' : '';
+    const style  = extra ? ` style="${extra}"` : '';
+    return `<button class="date-tab${active}"${style} onclick="applyDateFilter('${filter}')">${label} <span class="tab-count">${count}</span></button>`;
+  }
+
+  let html = '';
+
+  // ── Ending-soon tabs (only show if there are any) ──
+  if (soon2h > 0)
+    html += tab('soon-2h',    '⚡ 2h內', soon2h,    'border-color:var(--red);color:var(--red)');
+  if (soon6h > 0)
+    html += tab('soon-6h',    '🔥 6h內', soon6h,    'border-color:var(--yellow);color:var(--yellow)');
+  if (soonToday > 0 && soon6h !== soonToday)
+    html += tab('soon-today', '📅 今日', soonToday, '');
+
+  // Separator if we have soon tabs
+  if (soon2h > 0 || soon6h > 0 || soonToday > 0)
+    html += `<span style="width:1px;background:var(--border);height:24px;display:inline-block;margin:0 4px;align-self:center"></span>`;
+
+  // ── "All" + date tabs ──
+  html += tab('all', '全部', total);
   dates.forEach(d => {
-    const active = _activeDate === d ? ' active' : '';
-    html += `<button class="date-tab${active}" onclick="applyDateFilter('${d}')">
-      ${_getDateLabel(d)} <span class="tab-count">${counts[d]}</span>
-    </button>`;
+    html += tab(d, _getDateLabel(d), counts[d]);
   });
+
   bar.innerHTML = html;
+}
+
+function _filterByActive(arr, dateStr) {
+  if (dateStr === 'all') return arr;
+  if (dateStr.startsWith('soon-')) return arr.filter(r => _matchSoonFilter(r, dateStr));
+  return arr.filter(r => _getCardDate(r) === dateStr);
 }
 
 function applyDateFilter(dateStr) {
   _activeDate = dateStr;
-  // Re-render date filter buttons
   renderDateFilter(_allOpportunities, _allNoEdge);
 
-  const filteredOpps = dateStr === 'all'
-    ? _allOpportunities
-    : _allOpportunities.filter(r => _getCardDate(r) === dateStr);
-  const filteredNoEdge = dateStr === 'all'
-    ? _allNoEdge
-    : _allNoEdge.filter(r => _getCardDate(r) === dateStr);
+  const filteredOpps    = _filterByActive(_allOpportunities, dateStr);
+  const filteredNoEdge  = _filterByActive(_allNoEdge,        dateStr);
+  const isSoon          = dateStr.startsWith('soon-');
 
-  // Opportunities
+  // ── Opportunities ──
   const oppList = document.getElementById('opportunities-list');
   if (filteredOpps.length === 0) {
     const noEdgeCount = filteredNoEdge.length;
-    const hint = noEdgeCount > 0
-      ? `找到 ${noEdgeCount} 個市場，但 Edge < 5%，往下查看 ↓`
-      : '此日期無可評估的市場';
+    const hint = isSoon
+      ? (noEdgeCount > 0 ? `有 ${noEdgeCount} 個市場即將結束但 Edge < 5%，往下查看 ↓` : '目前無即將結束的套利機會')
+      : (noEdgeCount > 0 ? `找到 ${noEdgeCount} 個市場，但 Edge < 5%，往下查看 ↓` : '此日期無可評估的市場');
     oppList.innerHTML = `<div class="empty"><div class="empty-icon">📊</div><div>無超過 5% Edge 的機會</div>
       <div style="margin-top:8px;font-size:12px;color:var(--yellow)">${hint}</div></div>`;
   } else {
-    oppList.innerHTML = filteredOpps.map((r, i) => buildCard(r, true, i+1)).join('');
+    // Sort "soon" views by end_date ascending (most urgent first)
+    let renderList = [...filteredOpps];
+    if (isSoon) renderList.sort((a, b) => (_getEndMs(a)||Infinity) - (_getEndMs(b)||Infinity));
+    const soonHeader = isSoon
+      ? `<div class="soon-divider">⚡ 即將截止 — 按剩餘時間排序</div>` : '';
+    oppList.innerHTML = soonHeader + renderList.map((r, i) => buildCard(r, true, i+1)).join('');
   }
 
-  // No-edge
-  document.getElementById('no-edge-count').textContent = filteredNoEdge.length;
-  document.getElementById('no-edge-list').innerHTML = filteredNoEdge.map(r => buildCard(r, false)).join('');
+  // ── No-edge ──
+  let renderNoEdge = [...filteredNoEdge];
+  if (isSoon) renderNoEdge.sort((a, b) => (_getEndMs(a)||Infinity) - (_getEndMs(b)||Infinity));
+  document.getElementById('no-edge-count').textContent = renderNoEdge.length;
+  document.getElementById('no-edge-list').innerHTML    = renderNoEdge.map(r => buildCard(r, false)).join('');
+
+  // Start/restart live countdown timers
+  startTimers();
 }
 
 // ── Weather Site Links (by city → official national met service) ──
@@ -1149,6 +1293,12 @@ function buildCard(r, isOpp, rank) {
     ? `<a class="wx-link" href="${wxSite.url}" target="_blank" rel="noopener">📡 ${wxSite.name}</a>`
     : '';
 
+  // ── Timer badge ────────────────────────────────────────────
+  const endMs  = r.end_date ? new Date(r.end_date).getTime() : null;
+  const timerBadge = endMs
+    ? `<span class="timer-badge ok" data-end-ts="${endMs}">⏱ …</span>`
+    : '';
+
   // ── Station badge ──────────────────────────────────────────
   const stationBadge = r.station_icao
     ? `<span class="tag" style="color:var(--purple);border-color:var(--purple)">📡 ${r.station_icao}${r.station_name && r.station_name !== r.station_icao ? ' — ' + r.station_name : ''}</span>`
@@ -1206,6 +1356,7 @@ function buildCard(r, isOpp, rank) {
     ${r.conviction ? `<span class="tag ${convClass}">${convText}</span>` : ''}
     <span class="tag">📍 ${locationTag}</span>
     <span class="tag">📅 ${dateTag}</span>
+    ${timerBadge}
     ${stationBadge}
     ${isTempBucket ? '<span class="tag" style="color:var(--green);border-color:var(--green)">✓ 真實市場</span>' : isMock ? '<span class="tag" style="color:var(--yellow);border-color:var(--yellow)">Demo</span>' : ''}
     ${wxLink}
@@ -1426,6 +1577,9 @@ async function loadOpportunities(forceRefresh = false) {
     document.getElementById('no-edge-section').style.display = 'block';
     document.getElementById('no-edge-arrow').textContent = '▾';
 
+    // Start live countdown timers on all cards
+    startTimers();
+
     // Skipped markets
     const skipped = d.skipped || [];
     document.getElementById('skipped-count').textContent = skipped.length;
@@ -1462,6 +1616,13 @@ async function refresh() {
   await loadOpportunities(true);
   await Promise.all([loadLatency(), loadHistory()]);
 }
+
+// ── Refresh "ending soon" tab counts every 30s ─────────────
+setInterval(() => {
+  if (_allOpportunities.length > 0 || _allNoEdge.length > 0) {
+    renderDateFilter(_allOpportunities, _allNoEdge);
+  }
+}, 30000);
 
 // ── Auto-refresh every 1 min ───────────────────────────────
 const AUTO_REFRESH_MS = 60 * 1000;  // 1 minute
