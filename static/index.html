@@ -95,9 +95,49 @@ header {
 .dot.normal { background: var(--dim); }
 .dot.stale  { background: var(--red); }
 
+/* ── Stats Ribbon (always-visible top bar) ───────────────── */
+#stats-ribbon {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+  background: var(--surface);
+}
+#stats-ribbon::-webkit-scrollbar { display: none; }
+.ribbon-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 10px 18px;
+  border-right: 1px solid var(--border);
+  min-width: 80px;
+  flex-shrink: 0;
+}
+.ribbon-chip:last-child { border-right: none; }
+.ribbon-chip .rc-val { font-size: 20px; font-weight: 800; }
+.ribbon-chip .rc-lbl { font-size: 10px; color: var(--dim); margin-top: 1px; }
+.ribbon-chip.rc-green .rc-val { color: var(--green); }
+.ribbon-chip.rc-yellow .rc-val { color: var(--yellow); }
+.ribbon-chip.rc-blue .rc-val { color: var(--blue); }
+.ribbon-chip.rc-dim .rc-val { color: var(--dim); }
+#ribbon-source {
+  margin-left: auto;
+  font-size: 11px;
+  padding: 0 16px;
+  color: var(--dim);
+  flex-shrink: 0;
+}
+
 /* ── Main Layout ─────────────────────────────────────────── */
 main { display: grid; grid-template-columns: 1fr 300px; gap: 20px; padding: 20px 24px; }
-@media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+@media (max-width: 900px) {
+  main { grid-template-columns: 1fr; }
+  /* sidebar goes to top on mobile via order */
+  .sidebar { display: none; }  /* hidden — stats ribbon covers it */
+}
 
 /* ── Section Titles ─────────────────────────────────────── */
 .section-title {
@@ -417,6 +457,21 @@ main { display: grid; grid-template-columns: 1fr 300px; gap: 20px; padding: 20px
 .hist-action-buy  { color: var(--green); font-weight: 700; }
 .hist-action-sell { color: var(--red);   font-weight: 700; }
 .history-empty { padding: 24px; text-align: center; color: var(--dim); font-size: 12px; }
+
+/* ── Weather Site Link ───────────────────────────────────── */
+.wx-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--blue);
+  text-decoration: none;
+  border: 1px solid rgba(59,130,246,.3);
+  border-radius: 4px;
+  padding: 2px 8px;
+  transition: background .12s;
+}
+.wx-link:hover { background: rgba(59,130,246,.1); }
 </style>
 </head>
 <body>
@@ -435,6 +490,31 @@ main { display: grid; grid-template-columns: 1fr 300px; gap: 20px; padding: 20px
   <div class="model-pill"><span class="dot normal" id="dot-gfs"></span><span id="status-gfs">GFS —</span></div>
   <div class="model-pill"><span class="dot normal" id="dot-ecmwf"></span><span id="status-ecmwf">ECMWF —</span></div>
   <div class="model-pill"><span class="dot normal" id="dot-icon"></span><span id="status-icon">ICON —</span></div>
+</div>
+
+<!-- ── Stats Ribbon ── -->
+<div id="stats-ribbon">
+  <div class="ribbon-chip rc-green">
+    <span class="rc-val" id="rb-opp">—</span>
+    <span class="rc-lbl">套利機會</span>
+  </div>
+  <div class="ribbon-chip rc-yellow">
+    <span class="rc-val" id="rb-total">—</span>
+    <span class="rc-lbl">市場總數</span>
+  </div>
+  <div class="ribbon-chip rc-blue">
+    <span class="rc-val" id="rb-brier">—</span>
+    <span class="rc-lbl">Brier Score</span>
+  </div>
+  <div class="ribbon-chip rc-green">
+    <span class="rc-val" id="rb-wr">—</span>
+    <span class="rc-lbl">勝率</span>
+  </div>
+  <div class="ribbon-chip rc-dim">
+    <span class="rc-val" id="rb-win">—</span>
+    <span class="rc-lbl">已結算正確</span>
+  </div>
+  <span id="ribbon-source">—</span>
 </div>
 
 <main>
@@ -582,6 +662,155 @@ main { display: grid; grid-template-columns: 1fr 300px; gap: 20px; padding: 20px
 let sectionState = { 'no-edge': true, 'skipped': false };
 let autoRefreshTimer = null;
 
+// ── Weather Site Links (by city → official national met service) ──
+const _WX_MAP = [
+  // USA
+  { k:['new york','chicago','dallas','houston','miami','denver','atlanta','san francisco','austin','los angeles','seattle','boston','phoenix','las vegas','san antonio','san jose','minneapolis','nashville','portland','detroit'],
+    n:'weather.gov', u:'https://www.weather.gov' },
+  // Canada
+  { k:['toronto','vancouver','montreal','calgary','ottawa','edmonton','winnipeg'],
+    n:'Environment Canada', u:'https://weather.gc.ca' },
+  // UK
+  { k:['london','manchester','birmingham','edinburgh','glasgow','leeds','liverpool'],
+    n:'Met Office', u:'https://www.metoffice.gov.uk' },
+  // France
+  { k:['paris','lyon','marseille','bordeaux','toulouse','nice','nantes'],
+    n:'Météo-France', u:'https://meteofrance.com' },
+  // Germany
+  { k:['berlin','munich','hamburg','frankfurt','cologne','stuttgart','dusseldorf','dresden'],
+    n:'DWD', u:'https://www.dwd.de/EN' },
+  // Spain
+  { k:['madrid','barcelona','seville','valencia','bilbao','malaga'],
+    n:'AEMET', u:'https://www.aemet.es/en' },
+  // Italy
+  { k:['rome','milan','naples','turin','florence','bologna','venice','palermo'],
+    n:'Aeronautica', u:'https://www.meteoam.it' },
+  // Netherlands
+  { k:['amsterdam','rotterdam','the hague','utrecht'],
+    n:'KNMI', u:'https://www.knmi.nl/nederland-nu/weer' },
+  // Switzerland
+  { k:['zurich','geneva','bern','lausanne','basel'],
+    n:'MeteoSwiss', u:'https://www.meteoswiss.admin.ch' },
+  // Austria
+  { k:['vienna','graz','salzburg','innsbruck'],
+    n:'ZAMG', u:'https://www.zamg.ac.at' },
+  // Belgium
+  { k:['brussels','antwerp','ghent','liege'],
+    n:'RMI', u:'https://www.meteo.be/en' },
+  // Sweden
+  { k:['stockholm','gothenburg','malmo','uppsala'],
+    n:'SMHI', u:'https://www.smhi.se/en' },
+  // Norway
+  { k:['oslo','bergen','trondheim','stavanger'],
+    n:'Yr.no', u:'https://www.yr.no/en' },
+  // Denmark
+  { k:['copenhagen','aarhus','odense'],
+    n:'DMI', u:'https://www.dmi.dk' },
+  // Finland
+  { k:['helsinki','tampere','turku','oulu'],
+    n:'FMI', u:'https://en.ilmatieteenlaitos.fi' },
+  // Poland
+  { k:['warsaw','krakow','gdansk','wroclaw','poznan'],
+    n:'IMGW', u:'https://www.imgw.pl' },
+  // Czech Republic
+  { k:['prague','brno','ostrava'],
+    n:'ČHMÚ', u:'https://www.chmi.cz' },
+  // Hungary
+  { k:['budapest','debrecen'],
+    n:'OMSZ', u:'https://met.hu/en' },
+  // Portugal
+  { k:['lisbon','porto','faro'],
+    n:'IPMA', u:'https://www.ipma.pt/en' },
+  // Russia
+  { k:['moscow','saint petersburg','st. petersburg','novosibirsk','yekaterinburg'],
+    n:'Meteoinfo', u:'https://meteoinfo.ru' },
+  // Turkey
+  { k:['istanbul','ankara','izmir','antalya','bursa'],
+    n:'MGM', u:'https://www.mgm.gov.tr' },
+  // Japan
+  { k:['tokyo','osaka','nagoya','kyoto','sapporo','fukuoka','sendai','hiroshima'],
+    n:'JMA 気象庁', u:'https://www.jma.go.jp/en/week' },
+  // China
+  { k:['beijing','shanghai','guangzhou','chengdu','wuhan','chongqing','shenzhen','nanjing','tianjin','xian','shenyang','hangzhou','harbin'],
+    n:'中国天气', u:'https://www.weather.com.cn' },
+  // South Korea
+  { k:['seoul','busan','incheon','daegu','daejeon','gwangju','ulsan'],
+    n:'KMA', u:'https://web.kma.go.kr/eng' },
+  // India
+  { k:['mumbai','delhi','kolkata','lucknow','chennai','bangalore','hyderabad','pune','ahmedabad','jaipur'],
+    n:'IMD', u:'https://mausam.imd.gov.in' },
+  // Australia
+  { k:['sydney','melbourne','brisbane','perth','adelaide','canberra','darwin','hobart'],
+    n:'BOM', u:'https://www.bom.gov.au' },
+  // New Zealand
+  { k:['auckland','wellington','christchurch','dunedin'],
+    n:'MetService', u:'https://www.metservice.com' },
+  // Singapore
+  { k:['singapore'],
+    n:'MSS', u:'https://www.weather.gov.sg' },
+  // Malaysia
+  { k:['kuala lumpur','penang','johor bahru','kota kinabalu'],
+    n:'MET Malaysia', u:'https://www.met.gov.my' },
+  // Thailand
+  { k:['bangkok','chiang mai','phuket'],
+    n:'TMD', u:'https://www.tmd.go.th/en' },
+  // Taiwan
+  { k:['taipei','taichung','kaohsiung','tainan','hsinchu'],
+    n:'中央氣象署', u:'https://www.cwa.gov.tw' },
+  // Hong Kong
+  { k:['hong kong'],
+    n:'HKO', u:'https://www.hko.gov.hk/en' },
+  // UAE
+  { k:['dubai','abu dhabi','sharjah'],
+    n:'NCM', u:'https://www.ncm.ae' },
+  // Israel
+  { k:['tel aviv','jerusalem','haifa'],
+    n:'IMS', u:'https://ims.gov.il/en' },
+  // Egypt
+  { k:['cairo','alexandria'],
+    n:'EMA', u:'http://www.ema.gov.eg' },
+  // Saudi Arabia
+  { k:['jeddah','riyadh','mecca','medina'],
+    n:'NCM-SA', u:'https://ncm.gov.sa' },
+  // Nigeria
+  { k:['lagos','abuja','kano'],
+    n:'NIMET', u:'https://nimet.gov.ng' },
+  // Kenya
+  { k:['nairobi','mombasa'],
+    n:'KMD', u:'https://www.meteo.go.ke' },
+  // Brazil
+  { k:['sao paulo','rio de janeiro','brasilia','belo horizonte','salvador'],
+    n:'Inmet', u:'https://portal.inmet.gov.br' },
+  // Argentina
+  { k:['buenos aires','cordoba','rosario','mendoza'],
+    n:'SMN', u:'https://www.smn.gob.ar' },
+  // Mexico
+  { k:['mexico city','guadalajara','monterrey','puebla'],
+    n:'SMN-MX', u:'https://smn.conagua.gob.mx' },
+  // Panama
+  { k:['panama city','panama'],
+    n:'Hidromet', u:'https://www.hidrometeorologia.gob.pa' },
+  // Colombia
+  { k:['bogota','medellin','cali','barranquilla'],
+    n:'IDEAM', u:'https://www.ideam.gov.co' },
+  // Peru
+  { k:['lima','arequipa','cusco'],
+    n:'SENAMHI', u:'https://www.senamhi.gob.pe' },
+  // Chile
+  { k:['santiago','valparaiso','concepcion'],
+    n:'DMC', u:'https://www.meteochile.gob.cl' },
+];
+
+function getWeatherLink(city) {
+  if (!city) return null;
+  const c = city.toLowerCase();
+  for (const entry of _WX_MAP) {
+    if (entry.k.some(k => c.includes(k))) return { name: entry.n, url: entry.u };
+  }
+  // Universal fallback
+  return { name: 'wttr.in', url: `https://wttr.in/${encodeURIComponent(city)}?lang=zh` };
+}
+
 // ── Utilities ──────────────────────────────────────────────
 function pct(v) {
   if (v == null) return '—';
@@ -637,15 +866,29 @@ async function loadHistory() {
     const r = await fetch('/api/history?days=30');
     const d = await r.json();
     const b = d.brier_score;
+    // Sidebar widget (desktop)
     const el = document.getElementById('brier-score');
-    if (b) {
+    if (b && el) {
       const score = b.brier_consensus ?? b.brier_model;
       el.textContent = score.toFixed(3);
       el.className   = 'brier-score ' + (score < 0.10 ? 'good' : score < 0.20 ? 'ok' : 'bad');
-      document.getElementById('brier-label').textContent = `Brier Score (越低越好，<0.10 優秀)`;
-      document.getElementById('brier-total').textContent = b.total_resolved;
-      document.getElementById('brier-wr').textContent    = (b.win_rate * 100).toFixed(0) + '%';
+      document.getElementById('brier-label').textContent  = `Brier Score (越低越好，<0.10 優秀)`;
+      document.getElementById('brier-total').textContent  = b.total_resolved;
+      document.getElementById('brier-wr').textContent     = (b.win_rate * 100).toFixed(0) + '%';
       document.getElementById('brier-rating').textContent = b.rating;
+    }
+    // Stats ribbon (always visible)
+    if (b) {
+      const score = b.brier_consensus ?? b.brier_model;
+      document.getElementById('rb-brier').textContent = score.toFixed(3);
+      document.getElementById('rb-brier').style.color =
+        score < 0.10 ? 'var(--green)' : score < 0.20 ? 'var(--yellow)' : 'var(--red)';
+      document.getElementById('rb-wr').textContent = (b.win_rate * 100).toFixed(0) + '%';
+      document.getElementById('rb-win').textContent = b.wins + '/' + b.total_resolved;
+    } else {
+      document.getElementById('rb-brier').textContent = 'N/A';
+      document.getElementById('rb-wr').textContent    = 'N/A';
+      document.getElementById('rb-win').textContent   = '0/0';
     }
   } catch(e) {}
 }
@@ -717,6 +960,13 @@ function buildCard(r, isOpp) {
   const locationTag = r.location_hint || r.parsed?.location || '—';
   const dateTag     = r.parsed?.target_date || (r.end_date ? r.end_date.slice(0,10) : '—');
 
+  // Weather site link
+  const wxCity = r.location_hint || r.parsed?.location || '';
+  const wxSite = getWeatherLink(wxCity);
+  const wxLink = wxSite
+    ? `<a class="wx-link" href="${wxSite.url}" target="_blank" rel="noopener">📡 ${wxSite.name}</a>`
+    : '';
+
   return `
 <${tag} class="card ${cardClass}" ${linkAttr}>
   ${linkHint ? `<span class="card-link-hint">${linkHint}</span>` : ''}
@@ -731,6 +981,7 @@ function buildCard(r, isOpp) {
     <span class="tag">📍 ${locationTag}</span>
     <span class="tag">📅 ${dateTag}</span>
     ${isTempBucket ? '<span class="tag" style="color:var(--green);border-color:var(--green)">✓ 真實市場</span>' : isMock ? '<span class="tag" style="color:var(--yellow);border-color:var(--yellow)">Demo</span>' : ''}
+    ${wxLink}
   </div>
   <div class="prob-row">
     <div class="prob-cell">
@@ -890,17 +1141,24 @@ async function loadOpportunities(forceRefresh = false) {
     document.getElementById('sum-noedge').textContent   = summary.no_edge ?? '—';
     document.getElementById('sum-skipped').textContent  = summary.skipped ?? '—';
 
+    // Stats ribbon
+    document.getElementById('rb-opp').textContent   = summary.opportunities ?? '—';
+    document.getElementById('rb-total').textContent  = summary.total ?? '—';
+
     // Data source badge
     const allMarkets = [...(d.opportunities||[]),...(d.no_edge||[]),...(d.skipped||[])];
     const realCount = allMarkets.filter(r => r.source !== 'mock').length;
     const tempCount = allMarkets.filter(r => r.market_subtype === 'temperature_bucket').length;
     const srcEl = document.getElementById('data-source-tag');
+    const ribbonSrc = document.getElementById('ribbon-source');
     if (realCount === 0) {
-      srcEl.textContent = '⚠ Mock 數據 (無真實天氣市場)';
-      srcEl.style.color = 'var(--yellow)';
+      const t = '⚠ Mock 數據';
+      srcEl.textContent = t + ' (無真實天氣市場)'; srcEl.style.color = 'var(--yellow)';
+      ribbonSrc.textContent = t; ribbonSrc.style.color = 'var(--yellow)';
     } else {
-      srcEl.textContent = `✓ 真實市場 ${realCount} 個 (含 ${tempCount} 個氣溫市場)`;
-      srcEl.style.color = 'var(--green)';
+      const t = `✓ 真實市場 ${realCount} 個 (氣溫 ${tempCount})`;
+      srcEl.textContent = `✓ 真實市場 ${realCount} 個 (含 ${tempCount} 個氣溫市場)`; srcEl.style.color = 'var(--green)';
+      ribbonSrc.textContent = t; ribbonSrc.style.color = 'var(--green)';
     }
 
     // Opportunities
