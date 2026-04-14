@@ -154,13 +154,64 @@ main { display: grid; grid-template-columns: 1fr 300px; gap: 20px; padding: 20px
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 16px;
-  margin-bottom: 12px;
+  padding: 20px 22px;
+  margin-bottom: 16px;
   position: relative;
   transition: border-color .15s, transform .1s;
   text-decoration: none;
   color: inherit;
   display: block;
+}
+
+/* ── Top-5 Badge ─────────────────────────────────────────── */
+.top5-badge {
+  position: absolute;
+  top: -1px; left: -1px;
+  background: var(--yellow);
+  color: #000;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 10px;
+  border-radius: 9px 0 8px 0;
+  letter-spacing: .3px;
+}
+
+/* ── Date Filter Bar ─────────────────────────────────────── */
+#date-filter-bar {
+  display: flex;
+  gap: 6px;
+  padding: 10px 0 14px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.date-tab {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--dim);
+  border-radius: 6px;
+  padding: 5px 14px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  transition: all .15s;
+  white-space: nowrap;
+}
+.date-tab:hover { border-color: var(--blue); color: var(--text); }
+.date-tab.active { background: var(--blue); border-color: var(--blue); color: #fff; }
+.date-tab .tab-count {
+  font-size: 10px;
+  font-weight: 400;
+  margin-left: 4px;
+  opacity: .75;
+}
+
+/* ── Forecast reason box ─────────────────────────────────── */
+.forecast-reason {
+  font-size: 10px;
+  margin-top: 4px;
+  padding: 3px 6px;
+  border-radius: 3px;
+  line-height: 1.4;
 }
 .card:hover { border-color: var(--blue); transform: translateY(-1px); }
 .card.opportunity { border-left: 3px solid var(--green); }
@@ -521,6 +572,8 @@ main { display: grid; grid-template-columns: 1fr 300px; gap: 20px; padding: 20px
   <!-- ── Left: Opportunities ── -->
   <div>
     <div class="section-title">套利機會</div>
+    <!-- Date filter tabs -->
+    <div id="date-filter-bar"></div>
     <div id="opportunities-list"><div class="skeleton"></div><div class="skeleton"></div></div>
 
     <div id="no-edge-wrap" style="margin-top:16px">
@@ -661,6 +714,77 @@ main { display: grid; grid-template-columns: 1fr 300px; gap: 20px; padding: 20px
 // ── State ─────────────────────────────────────────────────
 let sectionState = { 'no-edge': true, 'skipped': false };
 let autoRefreshTimer = null;
+let _allOpportunities = [];
+let _allNoEdge = [];
+let _activeDate = 'all';
+
+// ── Date Filter ────────────────────────────────────────────
+function _getDateLabel(d) {
+  if (!d) return '—';
+  const dt = new Date(d + 'T00:00:00');
+  return (dt.getMonth()+1) + '/' + dt.getDate() + ' (' + ['日','一','二','三','四','五','六'][dt.getDay()] + ')';
+}
+
+function _getCardDate(r) {
+  return (r.parsed?.target_date || r.end_date || '').slice(0, 10);
+}
+
+function _buildDateCounts(opps, noEdge) {
+  const counts = {};
+  [...opps, ...noEdge].forEach(r => {
+    const d = _getCardDate(r);
+    if (d) counts[d] = (counts[d] || 0) + 1;
+  });
+  return counts;
+}
+
+function renderDateFilter(opps, noEdge) {
+  const bar = document.getElementById('date-filter-bar');
+  if (!bar) return;
+  const counts = _buildDateCounts(opps, noEdge);
+  const dates  = Object.keys(counts).sort();
+  if (dates.length <= 1) { bar.innerHTML = ''; return; }
+
+  const total = opps.length + noEdge.length;
+  let html = `<button class="date-tab${_activeDate==='all'?' active':''}" onclick="applyDateFilter('all')">全部 <span class="tab-count">${total}</span></button>`;
+  dates.forEach(d => {
+    const active = _activeDate === d ? ' active' : '';
+    html += `<button class="date-tab${active}" onclick="applyDateFilter('${d}')">
+      ${_getDateLabel(d)} <span class="tab-count">${counts[d]}</span>
+    </button>`;
+  });
+  bar.innerHTML = html;
+}
+
+function applyDateFilter(dateStr) {
+  _activeDate = dateStr;
+  // Re-render date filter buttons
+  renderDateFilter(_allOpportunities, _allNoEdge);
+
+  const filteredOpps = dateStr === 'all'
+    ? _allOpportunities
+    : _allOpportunities.filter(r => _getCardDate(r) === dateStr);
+  const filteredNoEdge = dateStr === 'all'
+    ? _allNoEdge
+    : _allNoEdge.filter(r => _getCardDate(r) === dateStr);
+
+  // Opportunities
+  const oppList = document.getElementById('opportunities-list');
+  if (filteredOpps.length === 0) {
+    const noEdgeCount = filteredNoEdge.length;
+    const hint = noEdgeCount > 0
+      ? `找到 ${noEdgeCount} 個市場，但 Edge < 5%，往下查看 ↓`
+      : '此日期無可評估的市場';
+    oppList.innerHTML = `<div class="empty"><div class="empty-icon">📊</div><div>無超過 5% Edge 的機會</div>
+      <div style="margin-top:8px;font-size:12px;color:var(--yellow)">${hint}</div></div>`;
+  } else {
+    oppList.innerHTML = filteredOpps.map((r, i) => buildCard(r, true, i+1)).join('');
+  }
+
+  // No-edge
+  document.getElementById('no-edge-count').textContent = filteredNoEdge.length;
+  document.getElementById('no-edge-list').innerHTML = filteredNoEdge.map(r => buildCard(r, false)).join('');
+}
 
 // ── Weather Site Links (by city → official national met service) ──
 const _WX_MAP = [
@@ -894,7 +1018,7 @@ async function loadHistory() {
 }
 
 // ── Card Builder ───────────────────────────────────────────
-function buildCard(r, isOpp) {
+function buildCard(r, isOpp, rank) {
   const edge   = r.edge || 0;
   const cons   = r.consensus || {};
   const gfs_p  = cons.gfs;
@@ -944,17 +1068,55 @@ function buildCard(r, isOpp) {
   const tag      = r.url ? 'a' : 'div';
   const linkHint = r.url ? '↗ 前往投注' : (isMock ? '📊 Demo 數據' : '');
 
-  // Temperature bucket badge + forecast line
+  // Top-5 badge
+  const top5Icons = ['🥇','🥈','🥉','#4','#5'];
+  const top5Badge = (isOpp && rank != null && rank >= 1 && rank <= 5)
+    ? `<span class="top5-badge">${top5Icons[rank-1]} Top ${rank}</span>`
+    : '';
+
+  // Temperature bucket badge + forecast line with reason
   const tempBadge = (isTempBucket && r.temp_display)
     ? `<span class="tag" style="color:var(--blue);border-color:var(--blue);font-weight:700">🌡 ${r.temp_display}</span>`
     : '';
   const fcMaxC = r.weather_temp_max_c;
   const fcMaxF = r.weather_temp_max_f;
-  const forecastLine = (isTempBucket && fcMaxC != null)
-    ? `<div style="font-size:11px;color:var(--dim);margin-top:8px;padding:6px 8px;background:rgba(59,130,246,.05);border-radius:4px;border:1px solid var(--border)">
-         🌤 氣象預測最高溫：<b style="color:var(--text)">${fcMaxC.toFixed(1)}°C${fcMaxF ? ' / ' + fcMaxF.toFixed(1) + '°F' : ''}</b>
-       </div>`
-    : '';
+
+  let forecastLine = '';
+  if (isTempBucket && fcMaxC != null) {
+    const tb = r.temp_bucket || {};
+    const lo_c = tb.lo_c;
+    const hi_c = tb.hi_c;
+    // Build range string
+    let rangeStr = '';
+    if (lo_c != null && hi_c != null) rangeStr = `${lo_c}–${hi_c}°C`;
+    else if (lo_c != null) rangeStr = `≥${lo_c}°C`;
+    else if (hi_c != null) rangeStr = `≤${hi_c}°C`;
+    // Build reason
+    let reasonHtml = '';
+    if (lo_c != null || hi_c != null) {
+      const belowLo = lo_c != null && fcMaxC < lo_c;
+      const aboveHi = hi_c != null && fcMaxC > hi_c;
+      const inside  = !belowLo && !aboveHi;
+      if (belowLo) {
+        reasonHtml = `<div class="forecast-reason" style="background:rgba(239,68,68,.08);color:var(--red)">
+          ↳ 預測 ${fcMaxC.toFixed(1)}°C <b>低於</b>區間下限 ${lo_c}°C，模型認為此區間機率偏低 → 建議 BUY NO
+        </div>`;
+      } else if (aboveHi) {
+        reasonHtml = `<div class="forecast-reason" style="background:rgba(239,68,68,.08);color:var(--red)">
+          ↳ 預測 ${fcMaxC.toFixed(1)}°C <b>高於</b>區間上限 ${hi_c}°C，模型認為此區間機率偏低 → 建議 BUY NO
+        </div>`;
+      } else {
+        reasonHtml = `<div class="forecast-reason" style="background:rgba(34,197,94,.08);color:var(--green)">
+          ↳ 預測 ${fcMaxC.toFixed(1)}°C 落在區間 [${rangeStr}] 內，模型認為機率較高 → 建議 BUY YES
+        </div>`;
+      }
+    }
+    forecastLine = `<div style="font-size:11px;color:var(--dim);margin-top:10px;padding:8px 10px;background:rgba(59,130,246,.05);border-radius:6px;border:1px solid var(--border)">
+      🌤 氣象預測最高溫：<b style="color:var(--text)">${fcMaxC.toFixed(1)}°C${fcMaxF ? ' / ' + fcMaxF.toFixed(1) + '°F' : ''}</b>
+      ${rangeStr ? `<span style="margin-left:10px;color:var(--dim)">市場區間：<b style="color:var(--text)">${rangeStr}</b></span>` : ''}
+      ${reasonHtml}
+    </div>`;
+  }
 
   // Location tag: for temp bucket use location_hint directly
   const locationTag = r.location_hint || r.parsed?.location || '—';
@@ -969,6 +1131,7 @@ function buildCard(r, isOpp) {
 
   return `
 <${tag} class="card ${cardClass}" ${linkAttr}>
+  ${top5Badge}
   ${linkHint ? `<span class="card-link-hint">${linkHint}</span>` : ''}
   <div class="card-header">
     <div class="card-question">${r.question || '—'}</div>
@@ -1161,10 +1324,18 @@ async function loadOpportunities(forceRefresh = false) {
       ribbonSrc.textContent = t; ribbonSrc.style.color = 'var(--green)';
     }
 
+    // Store globally for date filter
+    _allOpportunities = d.opportunities || [];
+    _allNoEdge        = d.no_edge || [];
+    _activeDate       = 'all';  // reset filter on fresh load
+
+    // Render date filter tabs
+    renderDateFilter(_allOpportunities, _allNoEdge);
+
     // Opportunities
     const oppList = document.getElementById('opportunities-list');
-    if (!d.opportunities || d.opportunities.length === 0) {
-      const noEdgeCount = (d.no_edge || []).length;
+    if (_allOpportunities.length === 0) {
+      const noEdgeCount = _allNoEdge.length;
       const hint = noEdgeCount > 0
         ? `掃到 ${noEdgeCount} 個市場，但模型 vs 市場差距 &lt; ${((d.edge_threshold||0.05)*100).toFixed(0)}%，往下查看 ↓`
         : '找不到可評估的市場';
@@ -1176,14 +1347,14 @@ async function loadOpportunities(forceRefresh = false) {
           <div id="next-refresh" style="margin-top:6px;font-size:11px;color:var(--dim)">下次自動掃描：60s 後</div>
         </div>`;
     } else {
-      oppList.innerHTML = d.opportunities.map(r => buildCard(r, true)).join('');
+      oppList.innerHTML = _allOpportunities.map((r, i) => buildCard(r, true, i+1)).join('');
     }
 
     // No-edge (default expanded)
-    const neCount = (d.no_edge || []).length;
+    const neCount = _allNoEdge.length;
     document.getElementById('no-edge-count').textContent = neCount;
     const neList = document.getElementById('no-edge-list');
-    neList.innerHTML = (d.no_edge || []).map(r => buildCard(r, false)).join('');
+    neList.innerHTML = _allNoEdge.map(r => buildCard(r, false)).join('');
     // Keep no-edge section visible
     document.getElementById('no-edge-section').style.display = 'block';
     document.getElementById('no-edge-arrow').textContent = '▾';

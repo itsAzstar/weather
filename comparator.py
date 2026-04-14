@@ -17,8 +17,7 @@ from fetcher_weather import (
     get_wind_exceed_probability,
 )
 
-TODAY = date.today()
-MAX_DAYS_AHEAD = 7        # Only consider markets resolving within this window
+MAX_DAYS_AHEAD = 10       # Only consider markets resolving within this window
 EDGE_THRESHOLD = 0.05     # 5% minimum divergence to flag as opportunity
 
 # ── Weather result cache (persistent across scan runs, 30-min TTL) ────────────
@@ -235,8 +234,10 @@ def compare_market(market: dict) -> Optional[dict]:
     except (ValueError, TypeError):
         return None
 
+    # Compute today fresh each call (avoid stale module-level date if server runs overnight)
+    today = date.today()
     # Skip markets too far in the future or already past
-    days_ahead = (target_date - TODAY).days
+    days_ahead = (target_date - today).days
     if days_ahead < 0:
         return {
             **market,
@@ -261,6 +262,7 @@ def compare_market(market: dict) -> Optional[dict]:
 
     # Fetch weather (cached per location+date to avoid duplicate API calls)
     weather = _get_weather_cached(location, target_date)
+    _ = today  # suppress unused warning
     if weather is None:
         return {
             **market,
