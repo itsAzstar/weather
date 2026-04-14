@@ -152,6 +152,18 @@ def _run_scan() -> list[dict]:
     with ThreadPoolExecutor(max_workers=8) as executor:
         enriched = list(executor.map(_enrich_one, results))
 
+    # ── Background: resolve any past markets (Polymarket API → archive fallback) ─
+    # Run in a daemon thread so it doesn't block scan response
+    import threading as _threading
+    def _bg_resolve():
+        try:
+            n = auto_resolve_past_markets()
+            if n:
+                print(f"[Scan] Background resolved {n} past market(s)")
+        except Exception as e:
+            print(f"[Scan] Background resolve error: {e}")
+    _threading.Thread(target=_bg_resolve, daemon=True).start()
+
     return enriched
 
 

@@ -56,10 +56,11 @@ def init_db():
         """)
         # Migrate: add new columns if they don't exist (idempotent)
         for col, coltype in [
-            ("temp_bucket_json", "TEXT"),
-            ("market_url",       "TEXT"),
-            ("market_subtype",   "TEXT"),
-            ("temp_display",     "TEXT"),
+            ("temp_bucket_json",  "TEXT"),
+            ("market_url",        "TEXT"),
+            ("market_subtype",    "TEXT"),
+            ("temp_display",      "TEXT"),
+            ("resolution_source", "TEXT"),   # 'polymarket' | 'archive' | 'manual'
         ]:
             try:
                 conn.execute(f"ALTER TABLE predictions ADD COLUMN {col} {coltype}")
@@ -113,20 +114,22 @@ def log_prediction(result: dict):
         ))
 
 
-def record_outcome(condition_id: str, outcome: bool):
+def record_outcome(condition_id: str, outcome: bool, source: str = "manual"):
     """
     市場結算後記錄結果。
     outcome=True → YES 結算, False → NO 結算。
+    source: 'polymarket' | 'archive' | 'manual'
     """
     init_db()
     with _connect() as conn:
         conn.execute("""
             UPDATE predictions
-            SET outcome=?, resolved_at=?
+            SET outcome=?, resolved_at=?, resolution_source=?
             WHERE condition_id=? AND outcome IS NULL
         """, (
             1 if outcome else 0,
             datetime.now(timezone.utc).isoformat(),
+            source,
             condition_id,
         ))
 
@@ -189,85 +192,162 @@ def get_recent_predictions(limit: int = 20) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def auto_resolve_past_markets():
+def _resolve_from_polymarket(condition_id: str) -> Optional[bool]:
     """
-    Auto-resolve temperature bucket predictions where target_date < today.
-    Uses Open-Meteo historical archive to get actual max temperature,
-    then compares to stored temp_bucket bounds to determine YES/NO.
-    Returns number of markets newly resolved.
+    Query Polymarket CLOB API to get the actual market resolution.
+    Returns True (YES won), False (NO won), None (still open / unknown).
+
+    When a market resolves:
+      YES wins → YES token price = 1.0, NO token price = 0.0
+      NO wins  → YES token price = 0.0, NO token price = 1.0
+    """
+    import requests
+    try:
+        resp = requests.get(
+            f"https://clob.polymarket.com/markets/{condition_id}",
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        tokens = data.get("tokens", [])
+        price_yes = None
+        for token in tokens:
+            outcome = (token.get("outcome") or "").lower()
+            try:
+                p = float(token.get("price", -1))
+            except (ValueError, TypeError):
+                continue
+            if outcome == "yes":
+                price_yes = p
+
+        if price_yes is None:
+            return None
+        if price_yes >= 0.99:
+            return True   # YES won
+        if price_yes <= 0.01:
+            return False  # NO won
+        return None       # Still trading (not yet resolved)
+    except Exception:
+        return None
+
+
+def _resolve_from_weather_archive(condition_id: str, location: str,
+                                   target_date_str: str, temp_bucket_json: str) -> Optional[bool]:
+    """
+    Fallback: estimate resolution from Open-Meteo historical archive.
+    Only works for temperature_bucket markets.
+    NOTE: uses city-centre coords, not the exact station — may differ from Polymarket.
     """
     import requests
     from fetcher_weather import resolve_location
+    try:
+        target_d = date.fromisoformat(target_date_str)
+        bucket = json.loads(temp_bucket_json or "{}")
+        if not bucket:
+            return None
+        coords = resolve_location(location)
+        if not coords:
+            return None
+        lat, lon = coords
 
+        resp = requests.get(
+            "https://archive-api.open-meteo.com/v1/archive",
+            params={
+                "latitude":   lat,
+                "longitude":  lon,
+                "start_date": target_d.isoformat(),
+                "end_date":   target_d.isoformat(),
+                "daily":      "temperature_2m_max",
+                "timezone":   "UTC",
+            },
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return None
+        temps = (resp.json().get("daily") or {}).get("temperature_2m_max") or []
+        if not temps or temps[0] is None:
+            return None
+        actual_c = temps[0]
+
+        lo_c = bucket.get("lo_c")
+        hi_c = bucket.get("hi_c")
+        if lo_c is not None and hi_c is not None:
+            return lo_c <= actual_c <= hi_c
+        elif lo_c is not None:
+            return actual_c >= lo_c
+        elif hi_c is not None:
+            return actual_c <= hi_c
+        return None
+    except Exception:
+        return None
+
+
+def auto_resolve_past_markets():
+    """
+    Auto-resolve past predictions using a two-stage approach:
+
+    Stage 1 — Polymarket CLOB API (all market types):
+      Query the actual market resolution price. If YES token = 1.0 → YES won,
+      0.0 → NO won. This is the ground truth. Works for rain, temp, wind etc.
+
+    Stage 2 — Open-Meteo archive fallback (temperature_bucket only):
+      If Polymarket hasn't resolved yet (market still showing mid prices),
+      estimate from historical weather. Less accurate but better than nothing.
+
+    Returns number of markets newly resolved.
+    """
     init_db()
     yesterday = (date.today() - timedelta(days=1)).isoformat()
 
     with _connect() as conn:
         rows = conn.execute("""
-            SELECT id, condition_id, location, target_date, temp_bucket_json, action
+            SELECT id, condition_id, location, target_date,
+                   temp_bucket_json, market_subtype, market_url
             FROM predictions
             WHERE outcome IS NULL
-              AND market_subtype = 'temperature_bucket'
-              AND temp_bucket_json IS NOT NULL
               AND target_date <= ?
-            LIMIT 100
+            LIMIT 200
         """, (yesterday,)).fetchall()
 
     resolved = 0
+    poly_hits = 0
+    archive_hits = 0
+
     for r in rows:
         try:
-            target_d = date.fromisoformat(r["target_date"])
-            bucket = json.loads(r["temp_bucket_json"] or "{}")
-            if not bucket:
+            condition_id = r["condition_id"]
+            # Skip mock markets
+            if condition_id.startswith("mock-"):
                 continue
 
-            coords = resolve_location(r["location"])
-            if not coords:
-                continue
-            lat, lon = coords
-
-            # Fetch actual historical max temperature
-            resp = requests.get(
-                "https://archive-api.open-meteo.com/v1/archive",
-                params={
-                    "latitude":   lat,
-                    "longitude":  lon,
-                    "start_date": target_d.isoformat(),
-                    "end_date":   target_d.isoformat(),
-                    "daily":      "temperature_2m_max",
-                    "timezone":   "UTC",
-                },
-                timeout=10,
-            )
-            if resp.status_code != 200:
+            # ── Stage 1: Ask Polymarket directly ──────────────────────
+            outcome = _resolve_from_polymarket(condition_id)
+            if outcome is not None:
+                record_outcome(condition_id, outcome, source="polymarket")
+                resolved += 1
+                poly_hits += 1
                 continue
 
-            data = resp.json()
-            temps = (data.get("daily") or {}).get("temperature_2m_max") or []
-            if not temps:
-                continue
-            actual_c = temps[0]
-            if actual_c is None:
-                continue
-
-            lo_c = bucket.get("lo_c")
-            hi_c = bucket.get("hi_c")
-
-            if lo_c is not None and hi_c is not None:
-                yes_won = lo_c <= actual_c <= hi_c
-            elif lo_c is not None:   # "X or higher"
-                yes_won = actual_c >= lo_c
-            elif hi_c is not None:   # "X or below"
-                yes_won = actual_c <= hi_c
-            else:
-                continue
-
-            record_outcome(r["condition_id"], yes_won)
-            resolved += 1
+            # ── Stage 2: Estimate from weather archive (temp only) ────
+            if (r["market_subtype"] == "temperature_bucket"
+                    and r["temp_bucket_json"]
+                    and r["target_date"]):
+                outcome = _resolve_from_weather_archive(
+                    condition_id, r["location"] or "",
+                    r["target_date"], r["temp_bucket_json"],
+                )
+                if outcome is not None:
+                    record_outcome(condition_id, outcome, source="archive")
+                    resolved += 1
+                    archive_hits += 1
 
         except Exception:
             continue
 
+    if resolved:
+        print(f"[History] Resolved {resolved} markets "
+              f"(Polymarket: {poly_hits}, archive-estimate: {archive_hits})")
     return resolved
 
 
