@@ -114,7 +114,7 @@ def _run_scan() -> list[dict]:
 
     # 4. 三模型共識（並行處理，只對有機會/有 edge 的市場）
     def _enrich_one(r: dict) -> dict:
-        if r.get("is_opportunity") or r.get("edge") is not None:
+        if r.get("is_opportunity"):
             parsed   = r.get("parsed", {})
             location = parsed.get("location", "")
             coords   = resolve_location(location)

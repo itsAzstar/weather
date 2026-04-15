@@ -5,6 +5,7 @@ consensus.py
 """
 
 import requests
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
@@ -12,6 +13,13 @@ from typing import Optional
 
 from fetcher_nws   import get_nws_forecast
 from fetcher_metno import get_metno_forecast
+
+# ── Model data cache (keyed by (lat, lon, date)) ─────────────────────────────
+# Raw API responses are the same for all temperature buckets of the same city+date.
+# Caching avoids 10-15x duplicate API calls per scan (one per bucket).
+_model_data_cache: dict = {}
+_model_data_lock = threading.Lock()
+MODEL_DATA_CACHE_TTL = 25 * 60  # 25 minutes — matches weather cache TTL
 
 # Open-Meteo 各模型 API
 GFS_API     = "https://api.open-meteo.com/v1/gfs"
@@ -210,6 +218,44 @@ def _metno_day_to_synthetic(metno: Optional[dict]) -> Optional[dict]:
     }
 
 
+def _fetch_model_data(lat: float, lon: float, target_date: date) -> dict:
+    """
+    Fetch raw daily data from all 5 models for (lat, lon, date) with caching.
+    Returns dict with gfs_day, ecmwf_day, icon_day, nws_day, metno_day.
+    Cached for 25 min so all temperature buckets of the same city+date share one fetch.
+    """
+    key = (round(lat, 3), round(lon, 3), target_date.isoformat())
+    now = time.time()
+
+    with _model_data_lock:
+        entry = _model_data_cache.get(key)
+        if entry is not None:
+            data, ts = entry
+            if now - ts < MODEL_DATA_CACHE_TTL:
+                return data
+
+    base_params = {**COMMON_PARAMS, "latitude": lat, "longitude": lon}
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        f_gfs   = ex.submit(_safe_get, GFS_API,   base_params)
+        f_ecmwf = ex.submit(_safe_get, ECMWF_API, base_params)
+        f_icon  = ex.submit(_safe_get, ICON_API,  base_params)
+        f_nws   = ex.submit(get_nws_forecast,   lat, lon, target_date)
+        f_metno = ex.submit(get_metno_forecast, lat, lon, target_date)
+
+    data = {
+        "gfs_day":   _extract_day(f_gfs.result(),   target_date),
+        "ecmwf_day": _extract_day(f_ecmwf.result(), target_date),
+        "icon_day":  _extract_day(f_icon.result(),  target_date),
+        "nws_day":   _nws_day_to_synthetic(f_nws.result()),
+        "metno_day": _metno_day_to_synthetic(f_metno.result()),
+    }
+
+    with _model_data_lock:
+        _model_data_cache[key] = (data, time.time())
+
+    return data
+
+
 def get_consensus(
     lat: float,
     lon: float,
@@ -233,27 +279,13 @@ def get_consensus(
         "sources_used": list[str],      # names of sources that returned data
     }
     """
-    base_params = {**COMMON_PARAMS, "latitude": lat, "longitude": lon}
-
-    # 並行查詢 GFS / ECMWF / ICON / NWS / Met.no
-    with ThreadPoolExecutor(max_workers=5) as ex:
-        f_gfs   = ex.submit(_safe_get, GFS_API,   base_params)
-        f_ecmwf = ex.submit(_safe_get, ECMWF_API, base_params)
-        f_icon  = ex.submit(_safe_get, ICON_API,  base_params)
-        f_nws   = ex.submit(get_nws_forecast,   lat, lon, target_date)
-        f_metno = ex.submit(get_metno_forecast, lat, lon, target_date)
-
-    gfs_raw   = f_gfs.result()
-    ecmwf_raw = f_ecmwf.result()
-    icon_raw  = f_icon.result()
-    nws_fc    = f_nws.result()
-    metno_fc  = f_metno.result()
-
-    gfs_day   = _extract_day(gfs_raw,   target_date)
-    ecmwf_day = _extract_day(ecmwf_raw, target_date)
-    icon_day  = _extract_day(icon_raw,  target_date)
-    nws_day   = _nws_day_to_synthetic(nws_fc)
-    metno_day = _metno_day_to_synthetic(metno_fc)
+    # Use cached model data — all buckets for the same city+date share one API fetch.
+    model_data = _fetch_model_data(lat, lon, target_date)
+    gfs_day   = model_data["gfs_day"]
+    ecmwf_day = model_data["ecmwf_day"]
+    icon_day  = model_data["icon_day"]
+    nws_day   = model_data["nws_day"]
+    metno_day = model_data["metno_day"]
 
     gfs_p   = _model_prob_from_day(gfs_day,   event_type, threshold, direction)
     ecmwf_p = _model_prob_from_day(ecmwf_day, event_type, threshold, direction)

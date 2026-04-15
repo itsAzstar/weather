@@ -664,40 +664,6 @@ main { display: grid; grid-template-columns: 1fr 290px; gap: 24px; padding: 24px
 }
 .wx-link:hover { background: rgba(59,130,246,.1); }
 
-/* ── Timer Badge ─────────────────────────────────────────── */
-.timer-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  font-size: 12px;
-  font-weight: 700;
-  padding: 3px 10px;
-  border-radius: 6px;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: .3px;
-  white-space: nowrap;
-}
-.timer-badge.urgent {
-  background: rgba(239,68,68,.15);
-  color: var(--red);
-  border: 1px solid rgba(239,68,68,.35);
-  animation: pulse-red 1.2s ease-in-out infinite;
-}
-.timer-badge.warning {
-  background: rgba(234,179,8,.12);
-  color: var(--yellow);
-  border: 1px solid rgba(234,179,8,.35);
-}
-.timer-badge.ok {
-  background: rgba(34,197,94,.07);
-  color: var(--green);
-  border: 1px solid rgba(34,197,94,.25);
-}
-.timer-badge.done {
-  background: rgba(100,116,139,.12);
-  color: var(--dim);
-  border: 1px solid var(--border);
-}
 @keyframes pulse-red {
   0%, 100% { opacity: 1; }
   50%       { opacity: .55; }
@@ -933,36 +899,6 @@ let autoRefreshTimer = null;
 let _allOpportunities = [];
 let _allNoEdge = [];
 let _activeDate = 'all';
-let _timerInterval = null;
-
-// ── Timer system ───────────────────────────────────────────
-function formatTimeLeft(ms) {
-  if (ms <= 0) return { text: '已結束', cls: 'done' };
-  const totalSec = Math.floor(ms / 1000);
-  const d = Math.floor(totalSec / 86400);
-  const h = Math.floor((totalSec % 86400) / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const s = totalSec % 60;
-  if (d > 0) return { text: `${d}d ${h}h`, cls: 'ok' };
-  if (h >= 6) return { text: `${h}h ${m}m`, cls: 'ok' };
-  if (h >= 1) return { text: `${h}h ${String(m).padStart(2,'0')}m`, cls: 'warning' };
-  if (m >= 1) return { text: `${m}m ${String(s).padStart(2,'0')}s`, cls: 'urgent' };
-  return { text: `${s}s`, cls: 'urgent' };
-}
-
-function startTimers() {
-  if (_timerInterval) clearInterval(_timerInterval);
-  function tick() {
-    document.querySelectorAll('[data-end-ts]').forEach(el => {
-      const endTs = parseInt(el.dataset.endTs, 10);
-      const { text, cls } = formatTimeLeft(endTs - Date.now());
-      el.textContent = '⏱ ' + text;
-      el.className = 'timer-badge ' + cls;
-    });
-  }
-  tick();
-  _timerInterval = setInterval(tick, 1000);
-}
 
 // ── "Ending soon" filter helpers ───────────────────────────
 function _getEndMs(r) {
@@ -1146,7 +1082,6 @@ function applyDateFilter(dateStr) {
   document.getElementById('no-edge-count').textContent = renderNoEdge.length;
   document.getElementById('no-edge-list').innerHTML    = renderNoEdge.map(r => buildCard(r, false)).join('');
 
-  startTimers();
 }
 
 // ── Weather Site Links (by city → official national met service) ──
@@ -1535,12 +1470,6 @@ function buildCard(r, isOpp, rank) {
     ? `<a href="${wxSite.url}" target="_blank" rel="noopener" title="${wxSite.name}" style="color:var(--blue);font-size:10px;text-decoration:none;border:1px solid rgba(91,142,240,.25);border-radius:4px;padding:2px 6px;font-family:var(--mono);white-space:nowrap;flex-shrink:0">↗ ${wxSite.name}</a>`
     : '';
 
-  // ── Timer badge ────────────────────────────────────────────
-  const endMs  = _getEndMs(r);
-  const timerBadge = endMs
-    ? `<span class="timer-badge ok" data-end-ts="${endMs}">⏱ …</span>`
-    : '';
-
   // ── Station badge ──────────────────────────────────────────
   const stationBadge = r.station_icao
     ? `<span class="tag" style="color:var(--purple);border-color:rgba(155,124,244,.35)">📡 ${r.station_icao}</span>`
@@ -1606,7 +1535,6 @@ function buildCard(r, isOpp, rank) {
       ${r.conviction ? `<span class="tag ${convClass}">${convText}</span>` : ''}
       <span class="tag">📍 ${locationTag}</span>
       <span class="tag">📅 ${dateTag}</span>
-      ${timerBadge}
       ${stationBadge}
       ${isTempBucket ? '<span class="tag" style="color:var(--green);border-color:rgba(0,201,141,.35)">✓ Real</span>' : isMock ? '<span class="tag" style="color:var(--yellow)">Demo</span>' : ''}
       ${wxIconLink}
@@ -1877,20 +1805,8 @@ setInterval(() => {
 
 // ── Auto-refresh every 1 min ───────────────────────────────
 const AUTO_REFRESH_MS = 60 * 1000;  // 1 minute
-let countdownTimer = null;
-
 function scheduleAutoRefresh() {
   if (autoRefreshTimer) clearTimeout(autoRefreshTimer);
-  if (countdownTimer)   clearInterval(countdownTimer);
-
-  let remaining = AUTO_REFRESH_MS / 1000;
-  countdownTimer = setInterval(() => {
-    remaining--;
-    const el = document.getElementById('next-refresh');
-    if (el) el.textContent = `下次自動掃描：${remaining}s 後`;
-    if (remaining <= 0) clearInterval(countdownTimer);
-  }, 1000);
-
   autoRefreshTimer = setTimeout(async () => {
     await loadOpportunities(false);
     await loadLatency();
