@@ -35,7 +35,9 @@ ENSEMBLE_API = "https://ensemble-api.open-meteo.com/v1/ensemble"
 
 COMMON_PARAMS = {
     "daily": "precipitation_sum,temperature_2m_max,temperature_2m_min,windspeed_10m_max,precipitation_probability_max",
-    "timezone": "UTC",
+    # Use local timezone so temperature_2m_max covers the LOCAL calendar day.
+    # "UTC" caused Tokyo/Seoul/etc. max temps to span the wrong local-day window.
+    "timezone": "auto",
     "forecast_days": 10,
 }
 

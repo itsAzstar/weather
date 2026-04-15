@@ -153,7 +153,10 @@ def fetch_daily_forecast(
         "wind_speed_unit":      "mph",
         "temperature_unit":     "celsius",
         "precipitation_unit":   "mm",
-        "timezone":             "UTC",
+        # Use local timezone so temperature_2m_max covers the LOCAL calendar day,
+        # not 00:00-23:59 UTC. Without this, Tokyo April 16 UTC ≠ April 16 JST —
+        # the model catches nighttime temps of the wrong local day.
+        "timezone":             "auto",
     }
     data = _safe_get(FORECAST_API, params, retries=2, timeout=6)
     if data is None:
@@ -230,7 +233,7 @@ def fetch_ensemble_forecast(
         "wind_speed_unit": "mph",
         "temperature_unit": "celsius",
         "precipitation_unit": "mm",
-        "timezone": "UTC",
+        "timezone": "auto",   # local timezone so hours map to the LOCAL calendar day
     }
 
     data = _safe_get(ENSEMBLE_API, params)

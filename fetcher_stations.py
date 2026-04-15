@@ -178,10 +178,111 @@ def _is_us_icao(icao: str) -> bool:
     return icao.upper().startswith("K")
 
 
+def _parse_obs_age(ts_str: str) -> tuple[Optional[str], Optional[float]]:
+    """Parse ISO timestamp → (observed_at_utc, obs_age_minutes)."""
+    if not ts_str:
+        return None, None
+    try:
+        from datetime import datetime, timezone as tz
+        obs_dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        age_s  = (datetime.now(tz.utc) - obs_dt).total_seconds()
+        return ts_str, round(age_s / 60, 1)
+    except Exception:
+        return ts_str, None
+
+
+def _get_nws_obs(icao: str) -> Optional[dict]:
+    """Fetch current observation from NWS (US stations only)."""
+    url = f"https://api.weather.gov/stations/{icao}/observations/latest"
+    try:
+        print(f"[Stations/NWS] Fetching obs for {icao} ...")
+        resp = requests.get(url, headers=NWS_HEADERS, timeout=10)
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        print(f"[Stations/NWS] Error for {icao}: {e}")
+        return None
+
+    try:
+        props    = data.get("properties", {})
+        temp_c   = (props.get("temperature",       {}) or {}).get("value")
+        dew_c    = (props.get("dewpoint",           {}) or {}).get("value")
+        hum      = (props.get("relativeHumidity",   {}) or {}).get("value")
+        wind_kph = (props.get("windSpeed",          {}) or {}).get("value")
+        wind_mph = round(wind_kph / 1.60934, 1) if wind_kph is not None else None
+        station_id = props.get("station", "").split("/")[-1] or icao
+        obs_at, age_min = _parse_obs_age(props.get("timestamp"))
+        if temp_c is None:
+            return None
+        result = {
+            "temp_c":          round(float(temp_c), 1),
+            "humidity_pct":    round(float(hum), 1) if hum is not None else None,
+            "wind_mph":        wind_mph,
+            "dewpoint_c":      round(float(dew_c), 1) if dew_c is not None else None,
+            "station_id":      station_id,
+            "station_name":    icao,
+            "observed_at_utc": obs_at,
+            "obs_age_minutes": age_min,
+        }
+        print(f"[Stations/NWS] {icao}: {result['temp_c']}°C, age={age_min}min")
+        return result
+    except Exception as e:
+        print(f"[Stations/NWS] Parse error for {icao}: {e}")
+        return None
+
+
+def _get_metar_obs(icao: str) -> Optional[dict]:
+    """
+    Fetch current METAR for any ICAO station via aviationweather.gov.
+    Covers worldwide stations (RJTT, RKSS, EGLL, VHHH, etc.) that NWS won't serve.
+    This is the same underlying data source Weather Underground uses for international
+    stations, matching Polymarket's official resolution data.
+    """
+    url = "https://aviationweather.gov/api/data/metar"
+    params = {"ids": icao, "format": "json", "hours": 2}
+    try:
+        print(f"[Stations/METAR] Fetching obs for {icao} ...")
+        resp = requests.get(url, params=params, headers=NWS_HEADERS, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        if not data:
+            print(f"[Stations/METAR] No data for {icao}")
+            return None
+        obs = data[0]  # most recent report
+        temp_c = obs.get("temp")
+        if temp_c is None:
+            return None
+        # obsTime is Unix epoch (seconds)
+        obs_ts = obs.get("obsTime")
+        obs_age_min = round((time.time() - obs_ts) / 60, 1) if obs_ts else None
+        obs_at = obs.get("reportTime") or obs.get("receiptTime")
+        dew_c  = obs.get("dewp")
+        wind_kts = obs.get("wspd")
+        wind_mph = round(wind_kts * 1.15078, 1) if wind_kts is not None else None
+        result = {
+            "temp_c":          round(float(temp_c), 1),
+            "humidity_pct":    None,
+            "wind_mph":        wind_mph,
+            "dewpoint_c":      round(float(dew_c), 1) if dew_c is not None else None,
+            "station_id":      icao,
+            "station_name":    obs.get("icaoId", icao),
+            "observed_at_utc": obs_at,
+            "obs_age_minutes": obs_age_min,
+        }
+        print(f"[Stations/METAR] {icao}: {result['temp_c']}°C, age={obs_age_min}min")
+        return result
+    except Exception as e:
+        print(f"[Stations/METAR] Error for {icao}: {e}")
+        return None
+
+
 def get_station_obs(icao: str) -> Optional[dict]:
     """
-    Fetch current ASOS/AWOS observation for the given ICAO station from NWS API.
-    NWS only serves US stations — returns None gracefully for international codes.
+    Fetch current observation for any ICAO station.
+    - US stations (K prefix): NWS API
+    - International: aviationweather.gov METAR (same source as Weather Underground)
 
     Returns dict with:
       temp_c, humidity_pct, wind_mph, dewpoint_c,
@@ -189,13 +290,7 @@ def get_station_obs(icao: str) -> Optional[dict]:
     """
     if not icao:
         return None
-
     icao = icao.upper()
-
-    # NWS only covers US stations
-    if not _is_us_icao(icao):
-        print(f"[Stations] {icao} is non-US — skipping NWS obs fetch")
-        return None
 
     # Check cache
     now = time.time()
@@ -206,83 +301,12 @@ def get_station_obs(icao: str) -> Optional[dict]:
             if now - ts < OBS_CACHE_TTL:
                 return result
 
-    # Fetch from NWS
-    url = f"https://api.weather.gov/stations/{icao}/observations/latest"
-    try:
-        print(f"[Stations] Fetching obs for {icao} ...")
-        resp = requests.get(url, headers=NWS_HEADERS, timeout=10)
-        if resp.status_code == 404:
-            print(f"[Stations] Station {icao} not found in NWS (404)")
-            with _obs_lock:
-                _obs_cache[icao] = (None, now)
-            return None
-        resp.raise_for_status()
-        data = resp.json()
-    except requests.exceptions.Timeout:
-        print(f"[Stations] Timeout fetching obs for {icao}")
-        return None
-    except Exception as e:
-        print(f"[Stations] Error fetching obs for {icao}: {e}")
-        return None
+    # Dispatch to correct source
+    if _is_us_icao(icao):
+        result = _get_nws_obs(icao)
+    else:
+        result = _get_metar_obs(icao)
 
-    try:
-        props = data.get("properties", {})
-        temp_prop = props.get("temperature", {}) or {}
-        dew_prop  = props.get("dewpoint", {}) or {}
-        hum_prop  = props.get("relativeHumidity", {}) or {}
-        wind_prop = props.get("windSpeed", {}) or {}
-        ts_str    = props.get("timestamp")  # ISO8601 UTC
-
-        temp_c = temp_prop.get("value")  # Celsius from NWS JSON
-        dew_c  = dew_prop.get("value")
-        hum    = hum_prop.get("value")
-        # NWS returns wind in km/h (unit: wmoUnit:km_h-1 or similar)
-        wind_kph = wind_prop.get("value")
-        wind_mph = round(wind_kph / 1.60934, 1) if wind_kph is not None else None
-
-        # Station identity
-        station_id   = props.get("station", "").split("/")[-1] or icao
-        station_name = (data.get("properties", {}).get("rawMessage") or "")[:0]  # placeholder
-        # Try to get from station URL
-        # The obs response embeds station name in "station" URL — we use ICAO as fallback
-        station_name = icao  # will be overridden if we can parse it
-
-        # Parse obs age
-        obs_age_minutes = None
-        observed_at_utc = None
-        if ts_str:
-            observed_at_utc = ts_str
-            try:
-                from datetime import datetime, timezone as tz
-                obs_dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                age_s  = (datetime.now(tz.utc) - obs_dt).total_seconds()
-                obs_age_minutes = round(age_s / 60, 1)
-            except Exception:
-                pass
-
-        if temp_c is None:
-            print(f"[Stations] {icao}: obs has no temperature value")
-            with _obs_lock:
-                _obs_cache[icao] = (None, now)
-            return None
-
-        result = {
-            "temp_c":           round(float(temp_c), 1),
-            "humidity_pct":     round(float(hum), 1) if hum is not None else None,
-            "wind_mph":         wind_mph,
-            "dewpoint_c":       round(float(dew_c), 1) if dew_c is not None else None,
-            "station_id":       station_id,
-            "station_name":     station_name,
-            "observed_at_utc":  observed_at_utc,
-            "obs_age_minutes":  obs_age_minutes,
-        }
-        print(f"[Stations] {icao}: {result['temp_c']}°C, age={obs_age_minutes}min")
-        with _obs_lock:
-            _obs_cache[icao] = (result, now)
-        return result
-
-    except Exception as e:
-        print(f"[Stations] Error parsing obs for {icao}: {e}")
-        with _obs_lock:
-            _obs_cache[icao] = (None, now)
-        return None
+    with _obs_lock:
+        _obs_cache[icao] = (result, now)
+    return result
