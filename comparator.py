@@ -170,24 +170,29 @@ def _get_weather_cached(location: str, target_date: date) -> Optional[dict]:
     if is_first:
         try:
             result = get_weather_for_location_date(location, target_date)
+        except Exception as e:
+            result = None
+            print(f"[Weather] Exception fetching {location} {target_date}: {e}")
+
+        if result is not None:
+            # Success — cache for the full TTL
             with _weather_cache_lock:
                 _weather_cache[key] = (result, _time.time())
             fut.set_result(result)
             return result
-        except Exception as e:
-            # Refetch failed — restore stale value if within grace window
+        else:
+            # Failed fetch — do NOT cache None (allow retry on next scan)
+            # Stale-while-revalidate: serve last-known-good if available
             with _weather_cache_lock:
                 if stale_val is not None:
-                    # Restore with original timestamp so it will retry next cycle
-                    # but still serve data now
-                    stale_ts = now - WEATHER_CACHE_TTL  # will retry next scan
-                    _weather_cache[key] = (stale_val, stale_ts)
-                    print(f"[Weather] Refetch failed for {location} {target_date} ({e}) — using stale data")
+                    # Restore stale entry; mark as expired so next scan retries
+                    _weather_cache[key] = (stale_val, now - WEATHER_CACHE_TTL)
+                    print(f"[Weather] Fetch failed for {location} {target_date} — serving stale data")
                     fut.set_result(stale_val)
                     return stale_val
                 else:
                     _weather_cache.pop(key, None)
-            fut.set_exception(e)
+            fut.set_result(None)
             return None
 
     try:
