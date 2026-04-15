@@ -1315,6 +1315,64 @@ async function loadHistory() {
   } catch(e) {}
 }
 
+// ── City UTC offset table (mirrors comparator.py _CITY_UTC_OFFSET) ──────────
+const _CITY_TZ = {
+  // North America
+  'new york': -5, 'nyc': -5, 'boston': -5, 'miami': -5, 'atlanta': -5,
+  'philadelphia': -5, 'washington': -5, 'dc': -5, 'detroit': -5, 'cleveland': -5,
+  'pittsburgh': -5, 'buffalo': -5, 'baltimore': -5, 'charlotte': -5, 'raleigh': -5,
+  'nashville': -6, 'chicago': -6, 'dallas': -6, 'houston': -6, 'austin': -6,
+  'san antonio': -6, 'minneapolis': -6, 'kansas city': -6, 'st. louis': -6,
+  'new orleans': -6, 'memphis': -6, 'indianapolis': -5,
+  'denver': -7, 'phoenix': -7, 'salt lake city': -7, 'albuquerque': -7,
+  'los angeles': -8, 'la': -8, 'san francisco': -8, 'sf': -8, 'seattle': -8,
+  'las vegas': -8, 'portland': -8, 'san diego': -8, 'sacramento': -8,
+  'toronto': -5, 'montreal': -5, 'vancouver': -8, 'calgary': -7,
+  'mexico city': -6, 'guadalajara': -6, 'monterrey': -6,
+  // South America
+  'sao paulo': -3, 'rio de janeiro': -3, 'buenos aires': -3, 'santiago': -4,
+  'bogota': -5, 'lima': -5, 'caracas': -4, 'quito': -5,
+  // Europe
+  'london': 0, 'dublin': 0, 'lisbon': 0, 'reykjavik': 0,
+  'paris': 1, 'berlin': 1, 'madrid': 1, 'rome': 1, 'amsterdam': 1,
+  'brussels': 1, 'vienna': 1, 'zurich': 1, 'stockholm': 1, 'oslo': 1,
+  'copenhagen': 1, 'warsaw': 1, 'budapest': 1, 'prague': 1,
+  'helsinki': 2, 'athens': 2, 'bucharest': 2, 'kyiv': 2,
+  'istanbul': 3, 'moscow': 3, 'minsk': 3, 'riyadh': 3,
+  // Africa
+  'cairo': 2, 'johannesburg': 2, 'nairobi': 3, 'casablanca': 1, 'lagos': 1,
+  // Middle East & South Asia
+  'dubai': 4, 'abu dhabi': 4, 'tehran': 3.5, 'baghdad': 3,
+  'karachi': 5, 'mumbai': 5.5, 'delhi': 5.5, 'kolkata': 5.5,
+  'dhaka': 6, 'colombo': 5.5, 'kathmandu': 5.75,
+  // Southeast Asia
+  'bangkok': 7, 'jakarta': 7, 'hanoi': 7, 'ho chi minh': 7,
+  'kuala lumpur': 8, 'singapore': 8, 'manila': 8,
+  // East Asia
+  'hong kong': 8, 'shanghai': 8, 'beijing': 8, 'taipei': 8, 'guangzhou': 8,
+  'shenzhen': 8, 'chengdu': 8, 'wuhan': 8, 'nanjing': 8, 'qingdao': 8,
+  'hangzhou': 8, 'xi\'an': 8, 'tianjin': 8, 'chongqing': 8,
+  'seoul': 9, 'tokyo': 9, 'osaka': 9, 'nagoya': 9,
+  // Oceania
+  'sydney': 10, 'melbourne': 10, 'brisbane': 10, 'perth': 8,
+  'auckland': 12, 'wellington': 12, 'christchurch': 12,
+};
+
+function getCityLocalTime(city) {
+  const key = (city || '').toLowerCase().trim();
+  let offset = _CITY_TZ[key];
+  if (offset === undefined) {
+    for (const [k, v] of Object.entries(_CITY_TZ)) {
+      if (key.includes(k) || k.includes(key)) { offset = v; break; }
+    }
+  }
+  if (offset === undefined) return null;
+  const local = new Date(Date.now() + offset * 3600000);
+  const hh = local.getUTCHours().toString().padStart(2, '0');
+  const mm = local.getUTCMinutes().toString().padStart(2, '0');
+  return hh + ':' + mm;
+}
+
 // ── Card Builder ───────────────────────────────────────────
 function buildCard(r, isOpp, rank) {
   const edge   = r.edge || 0;
@@ -1462,6 +1520,8 @@ function buildCard(r, isOpp, rank) {
   // Location tag: for temp bucket use location_hint directly
   const locationTag = r.location_hint || r.parsed?.location || '—';
   const dateTag     = r.parsed?.target_date || (r.end_date ? r.end_date.slice(0,10) : '—');
+  const localTime   = getCityLocalTime(locationTag);
+  const localTimeBadge = localTime ? `<span class="tag" style="color:var(--dim);border-color:rgba(128,128,128,.2)">🕐 ${localTime}</span>` : '';
 
   // Weather site link — inline icon only (no name text, avoids orphan line)
   const wxCity = r.location_hint || r.parsed?.location || '';
@@ -1535,6 +1595,7 @@ function buildCard(r, isOpp, rank) {
       ${r.conviction ? `<span class="tag ${convClass}">${convText}</span>` : ''}
       <span class="tag">📍 ${locationTag}</span>
       <span class="tag">📅 ${dateTag}</span>
+      ${localTimeBadge}
       ${stationBadge}
       ${isTempBucket ? '<span class="tag" style="color:var(--green);border-color:rgba(0,201,141,.35)">✓ Real</span>' : isMock ? '<span class="tag" style="color:var(--yellow)">Demo</span>' : ''}
       ${wxIconLink}

@@ -122,17 +122,23 @@ def _time_remaining_hours(city: str, lon: float, target_date: date) -> float:
         # Same local day
         return max(0.0, 24.0 - local_now_h)
 
-# ── Weather result cache (persistent across scan runs, 30-min TTL) ────────────
-# Stores (result, timestamp) so weather isn't re-fetched every 30-min scan.
+# ── Weather result cache (persistent across scan runs, 2-hour TTL) ────────────
+# Stores (result, timestamp) so weather isn't re-fetched too often.
+# Stale-while-revalidate: if refetch fails (e.g. rate limit), keep using the
+# last known good value for up to WEATHER_STALE_TTL (6 h) rather than returning
+# None and skipping every market.
 import time as _time
 
 _weather_cache: dict = {}          # key → (result_or_future, timestamp_or_None)
 _weather_cache_lock = threading.Lock()
-WEATHER_CACHE_TTL = 25 * 60       # 25 minutes — refresh before server cache expires
+WEATHER_CACHE_TTL   = 2 * 60 * 60   # 2 hours — weather doesn't change minute-to-minute
+WEATHER_STALE_TTL   = 6 * 60 * 60   # 6 hours — stale-while-revalidate grace window
 
 
 def _get_weather_cached(location: str, target_date: date) -> Optional[dict]:
-    """Fetch weather with cross-run cache (25-min TTL) and per-run deduplication."""
+    """Fetch weather with cross-run cache (2-h TTL) and per-run deduplication.
+    Stale-while-revalidate: returns last-known-good if refetch fails and cache
+    is younger than WEATHER_STALE_TTL (6 h), rather than dropping the market."""
     import concurrent.futures as cf
     key = (location.lower(), target_date.isoformat())
     now = _time.time()
@@ -145,15 +151,18 @@ def _get_weather_cached(location: str, target_date: date) -> Optional[dict]:
                 # In-flight Future — wait for it
                 is_first = False
                 fut = val
+                stale_val = None
             elif now - ts < WEATHER_CACHE_TTL:
                 # Valid cached result
                 return val
             else:
-                # Stale — re-fetch
+                # Stale — re-fetch, but keep val as fallback
+                stale_val = val
                 fut = cf.Future()
                 _weather_cache[key] = (fut, None)
                 is_first = True
         else:
+            stale_val = None
             fut = cf.Future()
             _weather_cache[key] = (fut, None)
             is_first = True
@@ -166,8 +175,18 @@ def _get_weather_cached(location: str, target_date: date) -> Optional[dict]:
             fut.set_result(result)
             return result
         except Exception as e:
+            # Refetch failed — restore stale value if within grace window
             with _weather_cache_lock:
-                _weather_cache.pop(key, None)
+                if stale_val is not None:
+                    # Restore with original timestamp so it will retry next cycle
+                    # but still serve data now
+                    stale_ts = now - WEATHER_CACHE_TTL  # will retry next scan
+                    _weather_cache[key] = (stale_val, stale_ts)
+                    print(f"[Weather] Refetch failed for {location} {target_date} ({e}) — using stale data")
+                    fut.set_result(stale_val)
+                    return stale_val
+                else:
+                    _weather_cache.pop(key, None)
             fut.set_exception(e)
             return None
 
