@@ -258,26 +258,40 @@ def _temp_bucket_model_prob(
         obs_adjusted = True
         print(f"[Comparator] obs {obs_temp_c:.1f}°C > forecast {forecast_mu:.1f}°C — using obs as mu")
 
-    # Realistic GFS RMSE for daily max temp:
-    #   Same-day (d0): ~2.5°C, Day-1: ~3.0°C, +0.5°C/day thereafter
-    # Using 1.5°C was too tight → fake overconfident edges like +76%
-    sigma = max(2.5, 2.5 + (days_ahead - 1) * 0.5)
+    # ── Sigma: calibrated to Open-Meteo daily-max MAE by lead time ─────────────
+    # Open-Meteo 1-day MAE ~1.0-1.5°C.  When obs is available and obs > forecast,
+    # effective_mu is already obs (set above) so uncertainty is tighter.
+    # Old sigma=2.5 for both d0 and d1 was too wide → fat tails → fake edge on
+    # extreme buckets.
+    if obs_adjusted:
+        # Obs-corrected mu: residual uncertainty is just how far temps can move
+        # from the current reading to end of day.  Use tighter sigma.
+        sigma = max(1.0, 1.0 + (days_ahead - 1) * 0.3)
+    else:
+        # Pure forecast: Open-Meteo MAE ~1.2°C (d1), grows ~0.5°C/day
+        sigma = max(1.2, 1.2 + (days_ahead - 1) * 0.5)
 
     lo_cdf = _norm_cdf((lo_c - effective_mu) / sigma) if lo_c is not None else 0.0
     hi_cdf = _norm_cdf((hi_c - effective_mu) / sigma) if hi_c is not None else 1.0
     forecast_prob = max(0.0, min(1.0, hi_cdf - lo_cdf))
 
-    # ── Intraday obs adjustment (obs hasn't surpassed forecast yet) ─────────
-    if (obs_temp_c is not None and time_remaining_hours is not None
-            and not obs_adjusted):  # only if we didn't already override with obs
+    # ── Intraday obs adjustment ────────────────────────────────────────────────
+    # Max temperature is MONOTONICALLY INCREASING.
+    # Physical facts that override probability calculations:
+    #   1. obs > hi_c  → today's max has already exceeded the ceiling.
+    #                    The bucket is permanently dead.  P(YES) = 0, full stop.
+    #   2. obs < lo_c with little time left → very unlikely to reach floor.
+    #   3. obs in bucket with little time left → boost toward certainty.
+    if obs_temp_c is not None and time_remaining_hours is not None and not obs_adjusted:
         obs_weight = max(0.0, 1.0 - time_remaining_hours / 24.0)
 
         if obs_weight > 0.05:
             obs_adjusted = True
 
             if hi_c is not None and obs_temp_c > hi_c:
-                # Obs above ceiling → P(YES) collapses
-                forecast_prob = max(0.01, round(forecast_prob * (1.0 - obs_weight), 3))
+                # DEFINITIVE: current reading already exceeds ceiling.
+                # Max temp cannot decrease — this bucket is dead.
+                forecast_prob = 0.0
 
             elif lo_c is not None and obs_temp_c >= lo_c and time_remaining_hours < 4.0:
                 if hi_c is None or obs_temp_c < hi_c:
@@ -329,16 +343,19 @@ def _calculate_model_probability(
         return round(prob, 3)
 
     elif event_type == "snow":
-        # Snow probability is correlated with rain in cold conditions
-        temp_max = weather.get("temp_max_c")
+        # Use Open-Meteo's native snowfall_sum → snow_probability field.
+        # The old rain_prob × temp_coeff hack ignored atmospheric vertical profile.
+        snow_prob = weather.get("snow_probability")
+        if snow_prob is not None:
+            return round(snow_prob, 3)
+        # Fallback if older cache entry lacks the field
+        temp_max  = weather.get("temp_max_c")
         rain_prob = get_rain_probability(weather)
         if temp_max is not None and temp_max < 2:
-            snow_prob = rain_prob * 0.9
+            return round(rain_prob * 0.9, 3)
         elif temp_max is not None and temp_max < 5:
-            snow_prob = rain_prob * 0.5
-        else:
-            snow_prob = rain_prob * 0.1
-        return round(snow_prob, 3)
+            return round(rain_prob * 0.5, 3)
+        return round(rain_prob * 0.1, 3)
 
     elif event_type == "temperature":
         if threshold is None:

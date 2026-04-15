@@ -148,12 +148,16 @@ def _run_scan() -> list[dict]:
                     r["conviction"]     = cons.get("conviction")
                     r["models_agree"]   = cons.get("models_agree", 0)
 
-                    # Kelly 建議注額：edge × conviction_factor × max $10
-                    edge = abs(r.get("edge") or 0)
+                    # Kelly 建議注額：扣除 Polymarket spread 後的有效 edge
+                    # Polymarket spread ~2-3% (conservative estimate 3%).
+                    # If net edge after friction is ≤ 0, bet size = 0.
+                    POLYMARKET_SPREAD_EST = 0.03
+                    raw_edge = abs(r.get("edge") or 0)
+                    net_edge = max(0.0, raw_edge - POLYMARKET_SPREAD_EST)
                     conv_factor = {"high": 1.0, "medium": 0.6, "low": 0.3}.get(
                         cons.get("conviction", "low"), 0.3
                     )
-                    kelly_size = round(edge * conv_factor * 10, 2)
+                    kelly_size = round(net_edge * conv_factor * 10, 2)
                     r["kelly_bet"] = min(kelly_size, 10.0)
                 except Exception:
                     r["consensus"] = None

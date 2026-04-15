@@ -148,6 +148,7 @@ def fetch_daily_forecast(
         "daily": (
             "temperature_2m_max,temperature_2m_min,"
             "precipitation_sum,precipitation_probability_max,"
+            "snowfall_sum,"
             "windspeed_10m_max"
         ),
         "wind_speed_unit":      "mph",
@@ -173,11 +174,12 @@ def fetch_daily_forecast(
         arr = daily.get(key)
         return arr[idx] if arr and idx < len(arr) else None
 
-    temp_max = _v("temperature_2m_max")
-    temp_min = _v("temperature_2m_min")
-    precip   = _v("precipitation_sum") or 0.0
-    precip_p = _v("precipitation_probability_max")
-    wind_max = _v("windspeed_10m_max")
+    temp_max  = _v("temperature_2m_max")
+    temp_min  = _v("temperature_2m_min")
+    precip    = _v("precipitation_sum") or 0.0
+    precip_p  = _v("precipitation_probability_max")
+    snowfall  = _v("snowfall_sum") or 0.0   # cm water-equivalent from Open-Meteo
+    wind_max  = _v("windspeed_10m_max")
 
     if precip_p is not None:
         rain_prob = max(0.0, min(1.0, precip_p / 100.0))
@@ -189,11 +191,22 @@ def fetch_daily_forecast(
     else:
         rain_prob = 0.10
 
+    # Snow probability: use native snowfall_sum directly.
+    # snowfall_sum is in cm (water-equivalent). Convert to a 0-1 probability
+    # by thresholds rather than the crude rain_prob × temp_coeff hack.
+    if snowfall >= 5.0:  snow_prob = 0.95
+    elif snowfall >= 1.0: snow_prob = 0.80
+    elif snowfall >= 0.1: snow_prob = 0.50
+    elif snowfall > 0:    snow_prob = 0.25
+    else:                 snow_prob = 0.05
+
     return {
         "lat":              lat,
         "lon":              lon,
         "target_date":      target_date.isoformat(),
         "rain_probability": round(rain_prob, 3),
+        "snow_probability": round(snow_prob, 3),
+        "snowfall_cm":      round(snowfall, 2),
         "total_precip_mm":  round(precip, 2),
         "temp_min_c":       round(temp_min, 1) if temp_min is not None else None,
         "temp_max_c":       round(temp_max, 1) if temp_max is not None else None,
