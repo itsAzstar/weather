@@ -163,7 +163,7 @@ def _run_scan() -> list[dict]:
                 pass
         return r
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:  # 8→4: consensus semaphore handles the rest
         enriched = list(executor.map(_enrich_one, results))
 
     # ── Background: resolve any past markets (Polymarket API → archive fallback) ─

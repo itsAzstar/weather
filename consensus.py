@@ -21,6 +21,12 @@ _model_data_cache: dict = {}
 _model_data_lock = threading.Lock()
 MODEL_DATA_CACHE_TTL = 25 * 60  # 25 minutes — matches weather cache TTL
 
+# ── Open-Meteo rate limiter ───────────────────────────────────────────────────
+# Caps concurrent in-flight requests to api.open-meteo.com at 3.
+# Without this, cache expiry triggers 8 outer workers × 3 models = 24 simultaneous
+# requests → burst triggers 429 → all markets skip for the full cache window.
+_openmeteo_sem = threading.Semaphore(3)
+
 # Open-Meteo 各模型 API
 GFS_API     = "https://api.open-meteo.com/v1/gfs"
 ECMWF_API   = "https://api.open-meteo.com/v1/ecmwf"
@@ -45,6 +51,12 @@ def _safe_get(url: str, params: dict, timeout: int = 8) -> Optional[dict]:
                 return None
             time.sleep(0.5)
     return None
+
+
+def _safe_get_openmeteo(url: str, params: dict, timeout: int = 8) -> Optional[dict]:
+    """Rate-limited wrapper for api.open-meteo.com — max 3 concurrent in-flight."""
+    with _openmeteo_sem:
+        return _safe_get(url, params, timeout=timeout)
 
 
 def _extract_day(data: dict, target_date: date) -> Optional[dict]:
@@ -236,9 +248,9 @@ def _fetch_model_data(lat: float, lon: float, target_date: date) -> dict:
 
     base_params = {**COMMON_PARAMS, "latitude": lat, "longitude": lon}
     with ThreadPoolExecutor(max_workers=5) as ex:
-        f_gfs   = ex.submit(_safe_get, GFS_API,   base_params)
-        f_ecmwf = ex.submit(_safe_get, ECMWF_API, base_params)
-        f_icon  = ex.submit(_safe_get, ICON_API,  base_params)
+        f_gfs   = ex.submit(_safe_get_openmeteo, GFS_API,   base_params)
+        f_ecmwf = ex.submit(_safe_get_openmeteo, ECMWF_API, base_params)
+        f_icon  = ex.submit(_safe_get_openmeteo, ICON_API,  base_params)
         f_nws   = ex.submit(get_nws_forecast,   lat, lon, target_date)
         f_metno = ex.submit(get_metno_forecast, lat, lon, target_date)
 

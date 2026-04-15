@@ -4,12 +4,17 @@ Fetches ensemble weather forecasts from Open-Meteo for a given location and date
 """
 
 import requests
+import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 ENSEMBLE_API   = "https://ensemble-api.open-meteo.com/v1/ensemble"
 FORECAST_API   = "https://api.open-meteo.com/v1/forecast"    # fast daily, no ensemble
+
+# Limit concurrent in-flight requests to Open-Meteo to 4.
+# The pre-warm step can have 6 workers all hitting this; cap to prevent 429 bursts.
+_openmeteo_sem = threading.Semaphore(4)
 
 # Supported city → (lat, lon) lookup
 CITY_COORDS: dict[str, tuple[float, float]] = {
@@ -106,22 +111,23 @@ def resolve_location(location: str) -> Optional[tuple[float, float]]:
 
 
 def _safe_get(url: str, params: dict, retries: int = 2, timeout: int = 8) -> Optional[dict]:
-    for attempt in range(retries):
-        try:
-            resp = requests.get(url, params=params, timeout=timeout)
-            resp.raise_for_status()
-            return resp.json()
-        except requests.exceptions.HTTPError as e:
-            print(f"    [HTTP error] {e} — attempt {attempt + 1}/{retries}")
-        except requests.exceptions.ConnectionError as e:
-            print(f"    [Connection error] {e} — attempt {attempt + 1}/{retries}")
-        except requests.exceptions.Timeout:
-            print(f"    [Timeout] — attempt {attempt + 1}/{retries}")
-        except Exception as e:
-            print(f"    [Unexpected] {e} — attempt {attempt + 1}/{retries}")
-        if attempt < retries - 1:
-            time.sleep(2 ** attempt)
-    return None
+    with _openmeteo_sem:
+        for attempt in range(retries):
+            try:
+                resp = requests.get(url, params=params, timeout=timeout)
+                resp.raise_for_status()
+                return resp.json()
+            except requests.exceptions.HTTPError as e:
+                print(f"    [HTTP error] {e} — attempt {attempt + 1}/{retries}")
+            except requests.exceptions.ConnectionError as e:
+                print(f"    [Connection error] {e} — attempt {attempt + 1}/{retries}")
+            except requests.exceptions.Timeout:
+                print(f"    [Timeout] — attempt {attempt + 1}/{retries}")
+            except Exception as e:
+                print(f"    [Unexpected] {e} — attempt {attempt + 1}/{retries}")
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)
+        return None
 
 
 def fetch_daily_forecast(
