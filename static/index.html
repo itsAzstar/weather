@@ -1499,9 +1499,18 @@ function buildCard(r, isOpp, rank) {
           </div>`;
         }
       } else {
-        reasonHtml = `<div class="forecast-reason" style="background:rgba(34,197,94,.08);color:var(--green)">
-          ↳ ${src} 落在區間 [${rangeStr}] 內 → 建議 BUY YES
-        </div>`;
+        // Temp is within bucket — show definitive BUY YES only when day is nearly
+        // over (obs is final). With time left, the market price already reflects
+        // this; the backend action tag is the correct signal to follow.
+        if (nearEndOfDay) {
+          reasonHtml = `<div class="forecast-reason" style="background:rgba(34,197,94,.08);color:var(--green)">
+            ↳ ${src} 落在區間 [${rangeStr}] 內，收盤前已確定 → 建議 BUY YES
+          </div>`;
+        } else {
+          reasonHtml = `<div class="forecast-reason" style="background:rgba(34,197,94,.06);color:var(--green)">
+            ↳ ${src} 落在區間 [${rangeStr}] 內${remStr}（以上方 action 為準）
+          </div>`;
+        }
       }
     }
 
