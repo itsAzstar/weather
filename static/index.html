@@ -1578,10 +1578,45 @@ function buildCard(r, isOpp, rank) {
     </div>`;
   }
 
+  // ── WU daily high box (resolution anchor) ──────────────────
+  let wuBox = '';
+  if (r.wu_temp_c != null) {
+    const wuF    = r.wu_temp_f != null ? ' / ' + r.wu_temp_f.toFixed(1) + '°F' : '';
+    const wuAge  = r.wu_age_min != null ? Math.round(r.wu_age_min) + 'min前更新' : '';
+    const wuSrc  = r.wu_source === 'cache' ? ' (快取)' : '';
+    let wuReason = '';
+    if (isTempBucket && r.wu_definitive) {
+      const tb = r.temp_bucket || {};
+      if (r.wu_definitive_result === 'dead') {
+        wuReason = `<div class="obs-reason" style="background:rgba(240,64,96,.08);color:var(--red)">
+          ↳ WU 日高已排除區間 → 結算 BUY NO（WU = Polymarket 官方來源）
+        </div>`;
+      } else {
+        wuReason = `<div class="obs-reason" style="background:rgba(0,201,141,.08);color:var(--green)">
+          ↳ WU 日高已在區間內，剩餘 &lt;2h → 結算 BUY YES
+        </div>`;
+      }
+    }
+    wuBox = `<div class="obs-box" style="border-color:rgba(91,142,240,.4);background:rgba(91,142,240,.04)">
+      🌐 <b>WU 日高</b> <b style="color:var(--blue)">${r.wu_temp_c.toFixed(1)}°C${wuF}</b>${wuAge ? `<span style="color:var(--dim);margin-left:6px">${wuAge}${wuSrc}</span>` : ''}
+      <span style="color:var(--dim);font-size:11px;margin-left:8px">Polymarket 官方結算來源</span>
+      ${wuReason}
+    </div>`;
+  }
+
+  // ── Latency arb warning ─────────────────────────────────────
+  let latencyWarn = '';
+  if (r.in_latency_arb_zone && !r.wu_definitive) {
+    const remH = r.time_remaining_hours != null ? r.time_remaining_hours.toFixed(0) + 'h' : '?h';
+    latencyWarn = `<div style="margin:6px 0;padding:6px 10px;background:rgba(232,168,76,.07);border-left:2px solid var(--yellow);border-radius:4px;font-size:12px;color:var(--yellow)">
+      ⚡ 延遲套利區（剩餘 ${remH}）：HFT 機器人每分鐘查詢 WU。預測模型優勢有限。${r.latency_note ? ' ' + r.latency_note : ''}
+    </div>`;
+  }
+
   // ── Total sources count for models_agree display ───────────
   const totalSources = (cons.sources_used || []).length || 3;
 
-  const hasDataSection = !!(forecastLine || obsBox || (cons && (gfs_p != null || ecmwf_p != null || icon_p != null)));
+  const hasDataSection = !!(forecastLine || obsBox || wuBox || latencyWarn || (cons && (gfs_p != null || ecmwf_p != null || icon_p != null)));
   const hasConsensus   = !!(cons && (gfs_p != null || ecmwf_p != null || icon_p != null));
 
   // agree color
@@ -1636,8 +1671,10 @@ function buildCard(r, isOpp, rank) {
   <div class="card-section data">
     ${forecastLine}
     ${obsBox}
+    ${wuBox}
+    ${latencyWarn}
     ${hasConsensus ? `
-    <div class="consensus-row" style="margin-top:${forecastLine || obsBox ? '10px' : '0'}">
+    <div class="consensus-row" style="margin-top:${forecastLine || obsBox || wuBox ? '10px' : '0'}">
       ${modelBadge('GFS', gfs_p)}
       ${modelBadge('ECMWF', ecmwf_p)}
       ${modelBadge('ICON', icon_p)}

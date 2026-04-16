@@ -252,6 +252,14 @@ def api_opportunities(refresh: bool = False):
                 elif isinstance(v, dict):
                     out[k] = {kk: vv for kk, vv in v.items()
                               if isinstance(vv, (str, int, float, bool, type(None)))}
+            # Ensure WU and latency arb fields are included
+            for extra_k in ("wu_temp_c", "wu_temp_f", "wu_age_min", "wu_source",
+                            "wu_definitive", "wu_definitive_result", "latency_note",
+                            "in_latency_arb_zone"):
+                if extra_k in r and extra_k not in out:
+                    v = r[extra_k]
+                    if isinstance(v, (str, int, float, bool, type(None))):
+                        out[extra_k] = v
             return out
 
         payload = {

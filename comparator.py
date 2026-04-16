@@ -18,9 +18,18 @@ from fetcher_weather import (
     get_wind_exceed_probability,
 )
 from fetcher_stations import resolve_station, get_station_obs
+from fetcher_wu import get_wu_temp_cached
 
 MAX_DAYS_AHEAD = 10       # Only consider markets resolving within this window
 EDGE_THRESHOLD = 0.08     # 8% minimum divergence to flag as opportunity (5% had too much noise)
+
+# ── Latency arbitrage zone ────────────────────────────────────────────────────
+# Markets within this many hours of resolution are dominated by HFT bots
+# polling WU every few minutes.  Our GFS/ECMWF forecast cannot compete on
+# LATENCY — but WU's current obs IS the resolution anchor.  Treat these
+# markets differently: if WU high matches a bucket we have HIGH confidence;
+# if WU high is outside we know the answer. Flag them but with a note.
+LATENCY_ARB_HOURS = 12.0
 
 # ── Timezone offset helpers (lon-based approximation) ────────────────────────
 # Major US cities hardcoded for accuracy; others use lon/15 heuristic.
@@ -401,10 +410,13 @@ def _calculate_model_probability(
         return None
 
 
-def _get_station_data(location: str, weather: Optional[dict]) -> dict:
+def _get_station_data(location: str, weather: Optional[dict], target_date: Optional[date] = None) -> dict:
     """
-    Resolve ICAO station for a location and fetch current obs.
-    Returns a dict with station_icao, station_name, obs_temp_c, obs_temp_f, obs_age_min.
+    Resolve ICAO station for a location and fetch current obs + WU daily high.
+
+    Returns a dict with:
+      station_icao, station_name, obs_temp_c, obs_temp_f, obs_age_min
+      wu_temp_c, wu_temp_f, wu_age_min, wu_source  (WU daily high — matches Polymarket resolution)
     All fields may be None if unavailable.
     """
     result = {
@@ -413,12 +425,18 @@ def _get_station_data(location: str, weather: Optional[dict]) -> dict:
         "obs_temp_c":    None,
         "obs_temp_f":    None,
         "obs_age_min":   None,
+        "wu_temp_c":     None,
+        "wu_temp_f":     None,
+        "wu_age_min":    None,
+        "wu_source":     None,
     }
     try:
         icao = resolve_station(location)
         if icao is None:
             return result
         result["station_icao"] = icao
+
+        # ── METAR / NWS obs (current temperature, intraday tracking) ─────────
         obs = get_station_obs(icao)
         if obs:
             t_c = obs.get("temp_c")
@@ -428,6 +446,21 @@ def _get_station_data(location: str, weather: Optional[dict]) -> dict:
             result["obs_age_min"]  = obs.get("obs_age_minutes")
         else:
             result["station_name"] = icao
+
+        # ── WU daily high (matches Polymarket's official resolution source) ───
+        # Fetch for today and tomorrow markets.  WU may not have data for future
+        # dates, but will have today's running high immediately.
+        if target_date is not None:
+            try:
+                wu = get_wu_temp_cached(icao, target_date)
+                if wu:
+                    result["wu_temp_c"]  = wu.get("wu_temp_c")
+                    result["wu_temp_f"]  = wu.get("wu_temp_f")
+                    result["wu_age_min"] = wu.get("wu_age_min")
+                    result["wu_source"]  = wu.get("wu_source")
+            except Exception as wu_e:
+                print(f"[WU] Skipping WU fetch for {location}: {wu_e}")
+
     except Exception as e:
         print(f"[Stations] Error resolving station for '{location}': {e}")
     return result
@@ -510,7 +543,7 @@ def compare_market(market: dict) -> Optional[dict]:
     obs_adjusted = False
 
     if days_ahead <= 1:  # Only fetch obs for today/tomorrow markets
-        station_data = _get_station_data(location, weather)
+        station_data = _get_station_data(location, weather, target_date=target_date)
         # Compute lon for time-remaining calculation
         lon = weather.get("lon") or 0.0
         time_remaining_hours = _time_remaining_hours(location, lon, target_date)
@@ -518,9 +551,42 @@ def compare_market(market: dict) -> Optional[dict]:
     # ── Temperature bucket markets (from Polymarket daily temp events) ─────────
     if market.get("market_subtype") == "temperature_bucket":
         temp_bucket = market.get("temp_bucket", {})
+
+        # ── WU authoritative temperature ──────────────────────────────────────
+        # WU daily high is what Polymarket resolves against.
+        # If WU has data, use it as the observation instead of METAR.
+        # METAR and WU can diverge 1-2°C — fatal for narrow buckets.
+        wu_temp_c   = station_data.get("wu_temp_c")
+        metar_temp  = station_data.get("obs_temp_c")
+        # Prefer WU high (resolution anchor).  Fall back to METAR current.
+        effective_obs_c = wu_temp_c if wu_temp_c is not None else metar_temp
+
+        # ── Latency arb zone detection ────────────────────────────────────────
+        # < LATENCY_ARB_HOURS: WU's running high IS the market outcome.
+        # HFT bots poll WU every few minutes.  We cannot compete on speed.
+        # However: WU high tells us the ANSWER if it's outside the bucket.
+        # If WU high > hi_c → bucket is dead → BUY NO with certainty.
+        # If WU high inside bucket and < 2h left → BUY YES with high confidence.
+        in_latency_arb_zone = time_remaining_hours < LATENCY_ARB_HOURS
+        wu_definitive = False
+        wu_definitive_result = None  # "dead" or "alive"
+
+        if wu_temp_c is not None and in_latency_arb_zone:
+            lo_c = temp_bucket.get("lo_c")
+            hi_c = temp_bucket.get("hi_c")
+            if hi_c is not None and wu_temp_c > hi_c:
+                wu_definitive = True
+                wu_definitive_result = "dead"  # P(YES) = 0
+            elif lo_c is not None and wu_temp_c < lo_c and time_remaining_hours < 3.0:
+                wu_definitive = True
+                wu_definitive_result = "dead"  # won't reach floor
+            elif lo_c is not None and hi_c is not None and lo_c <= wu_temp_c <= hi_c and time_remaining_hours < 2.0:
+                wu_definitive = True
+                wu_definitive_result = "alive"  # near-certain YES
+
         model_prob, obs_adjusted = _temp_bucket_model_prob(
             weather, temp_bucket, days_ahead,
-            obs_temp_c=station_data.get("obs_temp_c"),
+            obs_temp_c=effective_obs_c,
             time_remaining_hours=time_remaining_hours,
         )
         if model_prob is None:
@@ -549,12 +615,22 @@ def compare_market(market: dict) -> Optional[dict]:
         except (ValueError, TypeError):
             return None
 
+        # ── WU definitive override ────────────────────────────────────────
+        # WU daily high is the resolution anchor.  If WU already tells us
+        # the outcome with high certainty, override model_prob accordingly.
+        if wu_definitive:
+            if wu_definitive_result == "dead":
+                model_prob = 0.01  # effectively zero; keep tiny non-zero for display
+            else:
+                model_prob = 0.97  # effectively certain YES
+
         # ── Market certainty guard ─────────────────────────────────────────
         # When the market has already priced certainty (YES>90% or NO>90%),
         # the day is nearly done and live traders have observed real temps.
         # Our GFS forecast is stale — defer to the market, don't fight it.
+        # Exception: if WU is definitive, trust WU over the crowd.
         market_certainty = market_price_yes >= 0.90 or market_price_yes <= 0.10
-        if market_certainty and time_remaining_hours < 8.0:
+        if market_certainty and time_remaining_hours < 8.0 and not wu_definitive:
             return {
                 **market,
                 "model_probability": model_prob,
@@ -570,14 +646,16 @@ def compare_market(market: dict) -> Optional[dict]:
                 **station_data,
                 "time_remaining_hours": round(time_remaining_hours, 2),
                 "obs_adjusted": obs_adjusted,
+                "in_latency_arb_zone": in_latency_arb_zone,
+                "wu_definitive": wu_definitive,
             }
 
         edge = round(model_prob - market_price_yes, 4)
         abs_edge = abs(edge)
-        # Cap: edge >55% almost certainly means model error, not real arb
-        # (real weather arb edges rarely exceed 30-35%)
+        # Cap: edge >55% almost certainly means model error, not real arb.
+        # Exception: WU definitive cases legitimately produce >90% edges.
         EDGE_CAP = 0.55
-        if abs_edge > EDGE_CAP:
+        if abs_edge > EDGE_CAP and not wu_definitive:
             return {
                 **market,
                 "model_probability": model_prob,
@@ -593,12 +671,22 @@ def compare_market(market: dict) -> Optional[dict]:
                 **station_data,
                 "time_remaining_hours": round(time_remaining_hours, 2),
                 "obs_adjusted": obs_adjusted,
+                "in_latency_arb_zone": in_latency_arb_zone,
+                "wu_definitive": wu_definitive,
             }
         is_opp = abs_edge > EDGE_THRESHOLD
         action = ("BUY YES" if edge > 0 else "BUY NO") if is_opp else "HOLD"
+
+        # ── Latency arb zone: no WU data, forecast model only ─────────────────
+        # If we're in the latency zone without WU confirmation, note it.
+        latency_note = None
+        if in_latency_arb_zone and not wu_definitive and wu_temp_c is None:
+            latency_note = f"HFT zone ({time_remaining_hours:.0f}h left, no WU data) — model edge may not be executable"
+        elif in_latency_arb_zone and not wu_definitive and wu_temp_c is not None:
+            latency_note = f"WU high {wu_temp_c:.1f}°C observed but not definitive — {time_remaining_hours:.0f}h left"
+
         fc_max_c = weather.get("temp_max_c")
         fc_max_f = weather.get("temp_max_f")
-        obs_c    = station_data.get("obs_temp_c")
         return {
             **market,
             "model_probability": model_prob,
@@ -616,6 +704,10 @@ def compare_market(market: dict) -> Optional[dict]:
             **station_data,
             "time_remaining_hours": round(time_remaining_hours, 2),
             "obs_adjusted": obs_adjusted,
+            "in_latency_arb_zone": in_latency_arb_zone,
+            "wu_definitive": wu_definitive,
+            "wu_definitive_result": wu_definitive_result,
+            "latency_note": latency_note,
         }
 
     # Calculate model probability (standard binary markets)
