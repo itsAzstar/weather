@@ -235,19 +235,29 @@ def _temp_bucket_model_prob(
     time_remaining_hours: Optional[float] = None,
 ) -> tuple[Optional[float], bool]:
     """
-    Compute the probability (0-1) that the actual max temperature falls in
-    the given bucket, using a Normal distribution centred on the forecast max temp.
+    Compute P(T_max ∈ [lo_c, hi_c]) using the correct distribution given evidence.
 
-    Forecast uncertainty σ grows with lead time:
-      day 0-1 → 1.5 °C, +0.4 °C per extra day.
+    Two regimes:
 
-    If current obs + time_remaining are provided, applies obs-adjustment:
-    - obs_weight = 1 - time_remaining/24  (0 at midnight, ~1 at end of day)
-    - If obs already exceeds bucket hi_c → P(YES) collapses toward 0
-    - If obs is below bucket lo_c and < 3h left → P(YES) collapses toward 0
-    - If obs is inside bucket and < 6h left → P(YES) is boosted
+    A. No intraday obs: T_max ~ N(forecast_mu, sigma²)
+       sigma calibrated to Open-Meteo daily-max MAE (~1.2°C at d1, +0.5/day).
 
-    Returns: (probability, obs_adjusted_bool)
+    B. Obs available: T_max | T_max >= T_now ~ TruncatedNormal(mu, sigma, lower=T_now)
+       T_max is MONOTONICALLY INCREASING, so P(T_max < T_now) = 0 exactly.
+       The truncated distribution concentrates probability to the right of T_now.
+
+       Formula for P(lo ≤ T_max ≤ hi | T_max ≥ T_now):
+         eff_lo = max(lo_c, T_now)
+         Z      = 1 - Φ((T_now - mu) / sigma)   [normalising constant]
+         prob   = [Φ((hi - mu)/σ) - Φ((eff_lo - mu)/σ)] / Z
+
+       This correctly produces:
+         - P = 0 when T_now > hi_c (obs already exceeds ceiling — permanent)
+         - Probability shifts rightward as T_now rises within the bucket
+         - NO artificial boost toward certainty while time remains — tail risk
+           for temperature continuing to rise is always present until resolution
+
+    sigma shrinks as the day progresses (less residual movement possible).
     """
     forecast_mu = weather.get("temp_max_c")
     if forecast_mu is None:
@@ -256,66 +266,57 @@ def _temp_bucket_model_prob(
     lo_c = temp_bucket.get("lo_c")
     hi_c = temp_bucket.get("hi_c")
 
-    # ── Key insight: if current obs already EXCEEDS forecast, use obs as mu.
-    # The station has already recorded a higher temperature than the model
-    # predicted — the model is now lagging reality. Use the higher value so
-    # the probability calculation reflects what's actually happening.
-    obs_adjusted = False
-    effective_mu = forecast_mu
-    if obs_temp_c is not None and obs_temp_c > forecast_mu:
-        effective_mu = obs_temp_c  # obs overrides stale forecast
-        obs_adjusted = True
-        print(f"[Comparator] obs {obs_temp_c:.1f}°C > forecast {forecast_mu:.1f}°C — using obs as mu")
+    # Base sigma: Open-Meteo daily-max MAE ~1.2°C at d1, +0.5°C/day lead time
+    sigma_base = max(1.2, 1.2 + (days_ahead - 1) * 0.5)
 
-    # ── Sigma: calibrated to Open-Meteo daily-max MAE by lead time ─────────────
-    # Open-Meteo 1-day MAE ~1.0-1.5°C.  When obs is available and obs > forecast,
-    # effective_mu is already obs (set above) so uncertainty is tighter.
-    # Old sigma=2.5 for both d0 and d1 was too wide → fat tails → fake edge on
-    # extreme buckets.
-    if obs_adjusted:
-        # Obs-corrected mu: residual uncertainty is just how far temps can move
-        # from the current reading to end of day.  Use tighter sigma.
-        sigma = max(1.0, 1.0 + (days_ahead - 1) * 0.3)
-    else:
-        # Pure forecast: Open-Meteo MAE ~1.2°C (d1), grows ~0.5°C/day
-        sigma = max(1.2, 1.2 + (days_ahead - 1) * 0.5)
+    # ── Regime A: pure forecast, no obs ───────────────────────────────────────
+    if obs_temp_c is None or time_remaining_hours is None:
+        lo_cdf = _norm_cdf((lo_c - forecast_mu) / sigma_base) if lo_c is not None else 0.0
+        hi_cdf = _norm_cdf((hi_c - forecast_mu) / sigma_base) if hi_c is not None else 1.0
+        return round(max(0.0, min(1.0, hi_cdf - lo_cdf)), 3), False
 
-    lo_cdf = _norm_cdf((lo_c - effective_mu) / sigma) if lo_c is not None else 0.0
-    hi_cdf = _norm_cdf((hi_c - effective_mu) / sigma) if hi_c is not None else 1.0
-    forecast_prob = max(0.0, min(1.0, hi_cdf - lo_cdf))
+    # ── Regime B: truncated normal given T_now ────────────────────────────────
+    obs_adjusted = True
 
-    # ── Intraday obs adjustment ────────────────────────────────────────────────
-    # Max temperature is MONOTONICALLY INCREASING.
-    # Physical facts that override probability calculations:
-    #   1. obs > hi_c  → today's max has already exceeded the ceiling.
-    #                    The bucket is permanently dead.  P(YES) = 0, full stop.
-    #   2. obs < lo_c with little time left → very unlikely to reach floor.
-    #   3. obs in bucket with little time left → boost toward certainty.
-    if obs_temp_c is not None and time_remaining_hours is not None and not obs_adjusted:
-        obs_weight = max(0.0, 1.0 - time_remaining_hours / 24.0)
+    # Physical hard constraint: T_max already exceeded bucket ceiling → dead.
+    # This is the ONLY "certain" case — monotonic max temp is a physical fact.
+    if hi_c is not None and obs_temp_c > hi_c:
+        return 0.0, True
 
-        if obs_weight > 0.05:
-            obs_adjusted = True
+    # Residual sigma shrinks as the day progresses (less temperature movement
+    # possible). At day start: full sigma_base. At end of day: ~0.5°C (rounding).
+    hours_elapsed = max(0.0, 24.0 - time_remaining_hours)
+    day_progress  = min(1.0, hours_elapsed / 24.0)
+    sigma = max(0.5, sigma_base * (1.0 - day_progress * 0.55))
 
-            if hi_c is not None and obs_temp_c > hi_c:
-                # DEFINITIVE: current reading already exceeds ceiling.
-                # Max temp cannot decrease — this bucket is dead.
-                forecast_prob = 0.0
+    # Use the better of obs and forecast as distribution centre.
+    # If obs > forecast, the model is lagging — centre on obs.
+    mu = max(forecast_mu, obs_temp_c)
 
-            elif lo_c is not None and obs_temp_c >= lo_c and time_remaining_hours < 4.0:
-                if hi_c is None or obs_temp_c < hi_c:
-                    # Obs inside bucket, day nearly done → boost
-                    boosted = forecast_prob + (1.0 - forecast_prob) * obs_weight * 0.7
-                    forecast_prob = min(0.97, round(boosted, 3))
+    # Normalising constant: P(T_max >= T_now) in N(mu, sigma)
+    z_a = (obs_temp_c - mu) / sigma
+    p_above = 1.0 - _norm_cdf(z_a)  # = Φ((mu - T_now) / sigma)
 
-            elif lo_c is not None and obs_temp_c < lo_c and time_remaining_hours < 3.0:
-                gap_c = lo_c - obs_temp_c
-                if gap_c > 3.0:
-                    forecast_prob = max(0.01, round(forecast_prob * (1.0 - obs_weight * 0.9), 3))
-                elif gap_c > 1.0:
-                    forecast_prob = max(0.02, round(forecast_prob * (1.0 - obs_weight * 0.5), 3))
+    if p_above < 1e-7:
+        # Numerical edge: T_now far above mu.  All mass concentrated right
+        # at T_now — just check whether T_now falls inside the bucket.
+        in_lo = lo_c is None or obs_temp_c >= lo_c
+        in_hi = hi_c is None or obs_temp_c <= hi_c
+        return (0.95 if (in_lo and in_hi) else 0.01), True
 
-    return max(0.0, min(1.0, round(forecast_prob, 3))), obs_adjusted
+    # Effective lower limit: T_max can't go below what's already been recorded
+    eff_lo = max(lo_c, obs_temp_c) if lo_c is not None else obs_temp_c
+    eff_hi = hi_c  # upper limit unchanged (temps CAN still rise)
+
+    z_lo = (eff_lo - mu) / sigma
+    z_hi = (eff_hi - mu) / sigma if eff_hi is not None else math.inf
+    p_hi = _norm_cdf(z_hi) if eff_hi is not None else 1.0
+    p_lo = _norm_cdf(z_lo)
+
+    # Subtract mass below truncation point from both numerator and denominator
+    p_in_range = p_hi - p_lo
+    prob = p_in_range / p_above
+    return round(max(0.0, min(0.97, prob)), 3), True
 
 
 def _celsius_to_fahrenheit(c: float) -> float:
@@ -572,17 +573,21 @@ def compare_market(market: dict) -> Optional[dict]:
         wu_definitive_result = None  # "dead" or "alive"
 
         if wu_temp_c is not None and in_latency_arb_zone:
-            lo_c = temp_bucket.get("lo_c")
-            hi_c = temp_bucket.get("hi_c")
-            if hi_c is not None and wu_temp_c > hi_c:
+            lo_c_b = temp_bucket.get("lo_c")
+            hi_c_b = temp_bucket.get("hi_c")
+            # Only the "dead" case is physically certain:
+            #   T_max is monotonically increasing.  Once WU daily high > hi_c,
+            #   the bucket ceiling has already been breached — P(YES) = 0.
+            #
+            # "alive" (WU inside bucket) is NOT certain: temperature can still
+            #   rise above hi_c before the day ends.  Tail risk persists.
+            if hi_c_b is not None and wu_temp_c > hi_c_b:
                 wu_definitive = True
-                wu_definitive_result = "dead"  # P(YES) = 0
-            elif lo_c is not None and wu_temp_c < lo_c and time_remaining_hours < 3.0:
+                wu_definitive_result = "dead"
+            elif lo_c_b is not None and wu_temp_c < lo_c_b and time_remaining_hours < 3.0:
+                # WU daily high below floor with <3h left: won't reach lo_c
                 wu_definitive = True
-                wu_definitive_result = "dead"  # won't reach floor
-            elif lo_c is not None and hi_c is not None and lo_c <= wu_temp_c <= hi_c and time_remaining_hours < 2.0:
-                wu_definitive = True
-                wu_definitive_result = "alive"  # near-certain YES
+                wu_definitive_result = "dead"
 
         model_prob, obs_adjusted = _temp_bucket_model_prob(
             weather, temp_bucket, days_ahead,
@@ -616,13 +621,11 @@ def compare_market(market: dict) -> Optional[dict]:
             return None
 
         # ── WU definitive override ────────────────────────────────────────
-        # WU daily high is the resolution anchor.  If WU already tells us
-        # the outcome with high certainty, override model_prob accordingly.
-        if wu_definitive:
-            if wu_definitive_result == "dead":
-                model_prob = 0.01  # effectively zero; keep tiny non-zero for display
-            else:
-                model_prob = 0.97  # effectively certain YES
+        # Only the "dead" case is physically certain (monotonic max temp).
+        # "alive" (inside bucket) is NOT overridden — temperatures can still
+        # rise above hi_c before resolution, so tail risk must remain in prob.
+        if wu_definitive and wu_definitive_result == "dead":
+            model_prob = 0.01  # effectively zero; tiny non-zero for display
 
         # ── Market certainty guard ─────────────────────────────────────────
         # When the market has already priced certainty (YES>90% or NO>90%),

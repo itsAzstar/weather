@@ -1585,15 +1585,16 @@ function buildCard(r, isOpp, rank) {
     const wuAge  = r.wu_age_min != null ? Math.round(r.wu_age_min) + 'min前更新' : '';
     const wuSrc  = r.wu_source === 'cache' ? ' (快取)' : '';
     let wuReason = '';
-    if (isTempBucket && r.wu_definitive) {
+    if (isTempBucket && r.wu_definitive && r.wu_definitive_result === 'dead') {
+      wuReason = `<div class="obs-reason" style="background:rgba(240,64,96,.08);color:var(--red)">
+        ↳ WU 日高已超過區間上限 → 結算 BUY NO（最高溫不可逆，物理事實）
+      </div>`;
+    } else if (isTempBucket && r.wu_temp_c != null) {
       const tb = r.temp_bucket || {};
-      if (r.wu_definitive_result === 'dead') {
-        wuReason = `<div class="obs-reason" style="background:rgba(240,64,96,.08);color:var(--red)">
-          ↳ WU 日高已排除區間 → 結算 BUY NO（WU = Polymarket 官方來源）
-        </div>`;
-      } else {
-        wuReason = `<div class="obs-reason" style="background:rgba(0,201,141,.08);color:var(--green)">
-          ↳ WU 日高已在區間內，剩餘 &lt;2h → 結算 BUY YES
+      const lo_c = tb.lo_c, hi_c = tb.hi_c;
+      if (lo_c != null && hi_c != null && r.wu_temp_c >= lo_c && r.wu_temp_c <= hi_c) {
+        wuReason = `<div class="obs-reason" style="background:rgba(232,168,76,.07);color:var(--yellow)">
+          ↳ WU 日高目前在區間內，但仍有升溫可能，非確定結果（截斷分佈尾部風險）
         </div>`;
       }
     }
