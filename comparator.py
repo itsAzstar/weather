@@ -926,7 +926,7 @@ async def compare_market(market: dict) -> Optional[dict]:
         book = None
         if token_id_yes and abs(raw_edge) > EDGE_THRESHOLD * 0.4:
             try:
-                book = fetch_clob_book(token_id_yes)
+                book = await fetch_clob_book(token_id_yes)
             except Exception:
                 pass
 
@@ -1071,7 +1071,7 @@ async def compare_market(market: dict) -> Optional[dict]:
     book = None
     if token_id_yes and abs(raw_edge) > EDGE_THRESHOLD * 0.4:
         try:
-            book = fetch_clob_book(token_id_yes)
+            book = await fetch_clob_book(token_id_yes)
         except Exception:
             pass
 
@@ -1122,31 +1122,50 @@ async def compare_market(market: dict) -> Optional[dict]:
     }
 
 
+_CHUNK_SIZE = 50   # markets per concurrent gather batch
+
+
 async def compare_all_markets(markets: list[dict]) -> list[dict]:
     """
     Run comparisons for all markets concurrently using asyncio.gather.
     True async I/O — no thread pool, no blocking, no GIL contention.
     Opportunities are sorted by abs_edge descending.
     Non-opportunities follow.
+
+    Markets are processed in chunks of _CHUNK_SIZE to prevent thundering-herd
+    on Open-Meteo, Polymarket CLOB, and station APIs when 500+ markets arrive
+    simultaneously.  Within each chunk all coroutines run concurrently; chunks
+    run sequentially with a 50ms yield between them so the event loop can flush
+    I/O callbacks and enforce per-host connection limits cleanly.
     """
     clear_weather_cache()   # evict stale entries before a fresh scan run
     results = []
     skipped = 0
 
-    # asyncio.gather fires all compare_market coroutines concurrently.
-    # return_exceptions=True ensures one failure doesn't cancel the rest.
-    raw = await asyncio.gather(
-        *[compare_market(m) for m in markets],
-        return_exceptions=True,
-    )
-    for r in raw:
-        if isinstance(r, Exception):
-            print(f"[Comparator] Market error: {r}")
-            skipped += 1
-        elif r is None:
-            skipped += 1
-        else:
-            results.append(r)
+    total = len(markets)
+    for chunk_start in range(0, total, _CHUNK_SIZE):
+        chunk = markets[chunk_start : chunk_start + _CHUNK_SIZE]
+        chunk_end = min(chunk_start + _CHUNK_SIZE, total)
+        print(f"[Comparator] Processing markets {chunk_start+1}–{chunk_end} of {total}")
+
+        raw = await asyncio.gather(
+            *[compare_market(m) for m in chunk],
+            return_exceptions=True,
+        )
+        for r in raw:
+            if isinstance(r, Exception):
+                print(f"[Comparator] Market error: {r}")
+                skipped += 1
+            elif r is None:
+                skipped += 1
+            else:
+                results.append(r)
+
+        # Yield between chunks so the event loop can flush I/O callbacks,
+        # enforce connection limits, and avoid bursting all CLOB/Open-Meteo
+        # requests at once.  Skip the sleep after the last chunk.
+        if chunk_end < total:
+            await asyncio.sleep(0.05)
 
     print(f"\n[Comparator] Evaluated {len(results)} markets, skipped {skipped} (no location/date/price)")
 
