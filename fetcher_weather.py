@@ -3,11 +3,17 @@ fetcher_weather.py
 Fetches ensemble weather forecasts from Open-Meteo for a given location and date.
 """
 
+import math
 import requests
 import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
+
+
+def _norm_cdf(z: float) -> float:
+    """Standard Normal CDF via erfc — no scipy dependency."""
+    return 0.5 * math.erfc(-z / math.sqrt(2.0))
 
 ENSEMBLE_API   = "https://ensemble-api.open-meteo.com/v1/ensemble"
 FORECAST_API   = "https://api.open-meteo.com/v1/forecast"    # fast daily, no ensemble
@@ -423,25 +429,31 @@ def get_rain_probability(weather: dict) -> float:
 
 def get_temp_exceed_probability(weather: dict, threshold_c: float) -> float:
     """
-    Estimate probability that max temperature exceeds `threshold_c` degrees Celsius.
-    Uses a simple linear interpolation between temp_min and temp_max.
+    Estimate P(T_max > threshold_c) using a Normal distribution centered on
+    the forecast T_max with σ from ensemble spread (or lead-time heuristic).
+
+    Old implementation used linear interpolation between temp_min and temp_max —
+    this was inconsistent with the bucket markets which use Normal CDF, causing
+    the model to give contradictory probabilities for highly-correlated contracts
+    (e.g. "T_max ∈ [18,19°C]" vs "T_max > 18°C") on the same city+date.
+
+    P(T_max > threshold) = 1 − Φ((threshold − μ) / σ)
+    where μ = forecast T_max,  σ = ensemble spread or lead-time heuristic.
     """
-    t_min = weather.get("temp_min_c")
     t_max = weather.get("temp_max_c")
-    if t_min is None or t_max is None:
+    if t_max is None:
         return 0.5
 
-    if t_max <= threshold_c:
-        return 0.0
-    if t_min >= threshold_c:
-        return 1.0
+    ensemble_spread = weather.get("temp_spread_c")
+    if ensemble_spread is not None and ensemble_spread > 0.2:
+        sigma = float(ensemble_spread)
+    else:
+        # Fallback: same heuristic as _temp_bucket_model_prob
+        days_ahead = weather.get("days_ahead", 1)
+        sigma = max(1.2, 1.2 + (days_ahead - 1) * 0.5)
 
-    # Linear: what fraction of the [min, max] range is above threshold?
-    span = t_max - t_min
-    if span == 0:
-        return 0.0
-    above = t_max - threshold_c
-    return max(0.0, min(1.0, above / span))
+    z = (threshold_c - t_max) / sigma
+    return round(max(0.0, min(1.0, 1.0 - _norm_cdf(z))), 3)
 
 
 def get_wind_exceed_probability(weather: dict, threshold_mph: float) -> float:

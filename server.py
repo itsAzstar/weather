@@ -8,6 +8,7 @@ FastAPI 後端 — Polymarket Weather Arbitrage Dashboard
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -28,7 +29,59 @@ from history            import (log_prediction, get_brier_score, get_recent_pred
                                 auto_resolve_past_markets)
 from fetcher_weather    import resolve_location
 
-app = FastAPI(title="Weather Arb Dashboard", version="2.0")
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """
+    FastAPI lifespan replaces the deprecated @app.on_event("startup").
+    All background threads are started here; the yield hands control to the app.
+    On shutdown, daemon threads die automatically with the process.
+
+    Using @app.on_event was deprecated in FastAPI 0.93 and will be removed.
+    The old pattern also fired inside the ASGI startup phase, which means any
+    exception would silently swallow the traceback on some ASGI servers.
+    The lifespan pattern makes errors visible and integrates with async context.
+    """
+    # 1. Pre-warm scan so first page load is instant
+    def _bg_warm():
+        try:
+            time.sleep(2)
+            api_opportunities(refresh=False)
+        except Exception:
+            pass
+    threading.Thread(target=_bg_warm, daemon=True, name="bg-warm").start()
+
+    # 2. Background scheduler: auto-resolve settled markets every 10 min
+    def _bg_resolver():
+        time.sleep(30)   # Let server fully start first
+        while True:
+            try:
+                init_db()
+                n = auto_resolve_past_markets()
+                if n:
+                    print(f"[Scheduler] Auto-resolved {n} settled market(s)")
+            except Exception as e:
+                print(f"[Scheduler] Resolution error: {e}")
+            time.sleep(10 * 60)
+    threading.Thread(target=_bg_resolver, daemon=True, name="bg-resolver").start()
+    print("[Scheduler] Background resolution scheduler started (every 10 min)")
+
+    # 3. Background auto-scanner: refresh market data every 3 minutes
+    def _bg_scanner():
+        time.sleep(60)   # Let pre-warm finish first
+        while True:
+            try:
+                api_opportunities(refresh=True)
+                print("[Scheduler] Auto-scan complete")
+            except Exception as e:
+                print(f"[Scheduler] Auto-scan error: {e}")
+            time.sleep(3 * 60)
+    threading.Thread(target=_bg_scanner, daemon=True, name="bg-scanner").start()
+    print("[Scheduler] Auto-scanner started (every 3 min)")
+
+    yield   # ← app runs here; everything after yield is shutdown logic
+
+
+app = FastAPI(title="Weather Arb Dashboard", version="2.0", lifespan=_lifespan)
 
 # ── 靜態檔案 ─────────────────────────────────────────────────────────────────
 STATIC_DIR = Path(__file__).parent / "static"
@@ -361,49 +414,7 @@ def api_refresh():
     return api_opportunities(refresh=True)
 
 
-@app.on_event("startup")
-def _warm_cache():
-    """Pre-warm the cache + start background resolution scheduler."""
-    import threading
-
-    # 1. Pre-warm scan so first page load is instant
-    def _bg_warm():
-        try:
-            time.sleep(2)
-            api_opportunities(refresh=False)
-        except Exception:
-            pass
-    threading.Thread(target=_bg_warm, daemon=True).start()
-
-    # 2. Background scheduler: auto-resolve settled markets every 10 min
-    #    Runs independently — no page load required.
-    def _bg_resolver():
-        time.sleep(30)   # Let server fully start first
-        while True:
-            try:
-                init_db()
-                n = auto_resolve_past_markets()
-                if n:
-                    print(f"[Scheduler] Auto-resolved {n} settled market(s)")
-            except Exception as e:
-                print(f"[Scheduler] Resolution error: {e}")
-            time.sleep(10 * 60)   # Check every 10 minutes
-    threading.Thread(target=_bg_resolver, daemon=True).start()
-    print("[Scheduler] Background resolution scheduler started (every 10 min)")
-
-    # 3. Background auto-scanner: refresh market data every 3 minutes
-    #    Ensures predictions are logged even when no one has the dashboard open.
-    def _bg_scanner():
-        time.sleep(60)   # Let server fully start + pre-warm finish first
-        while True:
-            try:
-                api_opportunities(refresh=True)
-                print(f"[Scheduler] Auto-scan complete")
-            except Exception as e:
-                print(f"[Scheduler] Auto-scan error: {e}")
-            time.sleep(3 * 60)   # Every 3 minutes
-    threading.Thread(target=_bg_scanner, daemon=True).start()
-    print("[Scheduler] Auto-scanner started (every 3 min)")
+# Startup logic moved to _lifespan context manager (defined near top of file).
 
 
 if __name__ == "__main__":

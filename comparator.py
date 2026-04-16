@@ -867,13 +867,17 @@ def compare_market(market: dict) -> Optional[dict]:
                 wu_definitive = True
                 wu_definitive_result = "dead"
 
-        # Build state key for Kalman persistence: unique per (location, date, bucket)
+        # Build state key for Kalman persistence: (location, date) ONLY.
+        # The Kalman filter models the city's atmospheric state [T_mean, A] —
+        # one physical reality regardless of how many buckets Polymarket opened.
+        # Binding the key to "lo_c-hi_c" ran 5 independent Kalman chains for
+        # the same city+date, each with identical inputs → redundant computation.
+        # All buckets for the same city+date now share one converging σ.
         lo_c_b = temp_bucket.get("lo_c")
         hi_c_b = temp_bucket.get("hi_c")
         _state_key = (
             location.strip().lower(),
             target_date.isoformat(),
-            f"{lo_c_b}-{hi_c_b}",
         ) if kalman_obs_c is not None else None
 
         model_prob, obs_adjusted, regime_shift_flag = _temp_bucket_model_prob(
