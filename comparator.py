@@ -5,6 +5,7 @@ Flags opportunities where the divergence exceeds the threshold (default 5%).
 Also fetches station observations and applies obs-adjustment for intraday markets.
 """
 
+import calendar
 import math
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -84,21 +85,56 @@ _CITY_UTC_OFFSET: dict[str, float] = {
 }
 
 
-def _get_utc_offset(city: str, lon: float) -> float:
+def _is_dst_active(dt: datetime, base_offset: float) -> bool:
+    """
+    Rough DST check.  Returns True when summer time adds +1h to base_offset.
+    Covers US (2nd Sun Mar → 1st Sun Nov), EU (last Sun Mar → last Sun Oct),
+    and Southern Hemisphere flips (AU/NZ/SA: 1st Sun Oct → 1st Sun Apr).
+
+    This is intentionally approximate — we only need ±1h accuracy for
+    cos-phase calculations, and a full pytz/zoneinfo import would be overkill.
+    """
+    month = dt.month
+    day   = dt.day
+
+    # ── Northern Hemisphere DST (UTC-11 … UTC+3): roughly Apr–Oct ────────────
+    if -11 <= base_offset <= 3:
+        # US: 2nd Sunday March → 1st Sunday November
+        # EU: last Sunday March → last Sunday October
+        # Approximation: active Apr 1 – Oct 31 (good enough)
+        return 3 < month < 11 or (month == 3 and day >= 8) or (month == 11 and day < 7)
+
+    # ── Southern Hemisphere (AU/NZ/SA: UTC+8 … UTC+13) ───────────────────────
+    if base_offset >= 8:
+        # AU/NZ: 1st Sunday Oct → 1st Sunday Apr
+        return month >= 10 or month <= 3
+
+    # Mid-latitudes without DST (most of Asia, Africa) — assume no DST
+    return False
+
+
+def _get_utc_offset(city: str, lon: float, dt: Optional[datetime] = None) -> float:
     """
     Return approximate UTC offset in hours for a city.
-    Uses hardcoded table for major cities; falls back to lon/15 heuristic.
-    Does NOT account for DST (within 1h accuracy is sufficient).
+    Uses hardcoded table (winter/standard offsets) and applies DST correction
+    when dt is provided — adds +1h for regions that observe summer time.
+    Falls back to lon/15 heuristic for unknown cities.
     """
     key = city.strip().lower()
+    base = None
     if key in _CITY_UTC_OFFSET:
-        return _CITY_UTC_OFFSET[key]
-    # Partial match
-    for city_key, offset in _CITY_UTC_OFFSET.items():
-        if key in city_key or city_key in key:
-            return offset
-    # Fallback: longitude-based approximation (lon/15)
-    return round(lon / 15.0)
+        base = _CITY_UTC_OFFSET[key]
+    else:
+        for city_key, offset in _CITY_UTC_OFFSET.items():
+            if key in city_key or city_key in key:
+                base = offset
+                break
+    if base is None:
+        base = round(lon / 15.0)
+
+    if dt is not None and _is_dst_active(dt, base):
+        return base + 1.0
+    return base
 
 
 def _time_remaining_hours(city: str, lon: float, target_date: date) -> float:
@@ -106,9 +142,9 @@ def _time_remaining_hours(city: str, lon: float, target_date: date) -> float:
     Estimate how many hours remain in the local day at target_date.
     Returns 0.0 if the day has already passed, 24.0 if it hasn't started.
     """
-    utc_offset = _get_utc_offset(city, lon)
     now_utc = datetime.now(timezone.utc)
-    # Local time approximation (no DST)
+    utc_offset = _get_utc_offset(city, lon, dt=now_utc)
+    # Local time with DST correction
     local_now_h = now_utc.hour + now_utc.minute / 60.0 + utc_offset
     # Wrap to 0-24
     local_now_h = local_now_h % 24
@@ -131,6 +167,45 @@ def _time_remaining_hours(city: str, lon: float, target_date: date) -> float:
     else:
         # Same local day
         return max(0.0, 24.0 - local_now_h)
+
+# ── Kalman posterior state (persistent across 30-min scans, 26h TTL) ─────────
+# Key: (location_lower, date_iso, "lo_c-hi_c")
+# Value: (p_mm_post, p_aa_post, p_ma_post)  — posterior covariance
+# Without this, P resets every scan → σ never converges → phantom spillover.
+_kalman_state: dict = {}
+_kalman_state_ts: dict = {}
+_kalman_state_lock = threading.Lock()
+_KALMAN_STATE_MAX_AGE_S = 26 * 3600   # purge next-day stale entries
+
+
+def _kalman_state_get(key: tuple) -> Optional[tuple[float, float, float]]:
+    """Return saved (p_mm, p_aa, p_ma) or None if missing/stale."""
+    with _kalman_state_lock:
+        ts = _kalman_state_ts.get(key)
+        if ts is None:
+            return None
+        import time
+        if time.time() - ts > _KALMAN_STATE_MAX_AGE_S:
+            _kalman_state.pop(key, None)
+            _kalman_state_ts.pop(key, None)
+            return None
+        return _kalman_state.get(key)
+
+
+def _kalman_state_set(key: tuple, p_mm: float, p_aa: float, p_ma: float) -> None:
+    """Persist posterior covariance for next scan."""
+    import time
+    with _kalman_state_lock:
+        _kalman_state[key] = (p_mm, p_aa, p_ma)
+        _kalman_state_ts[key] = time.time()
+
+
+def _kalman_state_reset(key: tuple) -> None:
+    """Wipe state on regime shift so the next scan restarts from prior."""
+    with _kalman_state_lock:
+        _kalman_state.pop(key, None)
+        _kalman_state_ts.pop(key, None)
+
 
 # ── Weather result cache (persistent across scan runs, 2-hour TTL) ────────────
 # Stores (result, timestamp) so weather isn't re-fetched too often.
@@ -241,7 +316,7 @@ def _kalman_diurnal_update(
     obs_temp_c: float,
     cos_phase: float,
     R: float,
-) -> tuple[float, float, float, float, bool]:
+) -> tuple[float, float, float, float, bool, float, float, float]:
     """
     1-observation 2-state Kalman filter update with regime-shift detection.
 
@@ -261,7 +336,10 @@ def _kalman_diurnal_update(
         rather than the prior.  This prevents the model from dismissing a
         real 5°C regime change as an outlier.
 
-    Returns (T_mean_post, A_post, T_max_post, sigma_T_max_post, regime_shift_flag).
+    Returns (T_mean_post, A_post, T_max_post, sigma_T_max_post, regime_shift_flag,
+             p_mm_post, p_aa_post, p_ma_post).
+    The posterior P values are returned so callers can persist them across scans
+    (sequential Kalman: σ converges over repeated observations).
     """
     c = cos_phase
 
@@ -274,7 +352,7 @@ def _kalman_diurnal_update(
         # Degenerate: near-zero innovation variance → no update
         T_max_post = T_mean_prior + A_prior
         sigma_post = math.sqrt(max(1e-4, p_mm + 2.0 * p_ma + p_aa))
-        return T_mean_prior, A_prior, T_max_post, sigma_post, False
+        return T_mean_prior, A_prior, T_max_post, sigma_post, False, p_mm, p_aa, p_ma
 
     # ── Regime-shift check ────────────────────────────────────────────────────
     # A standard Kalman filter assumes Gaussian noise.  A convective downdraft
@@ -314,7 +392,7 @@ def _kalman_diurnal_update(
     var_T_max = p_mm_post + 2.0 * p_ma_post + p_aa_post
     sigma_post = math.sqrt(max(1e-4, var_T_max))
 
-    return T_mean_post, A_post, T_max_post, sigma_post, regime_shift
+    return T_mean_post, A_post, T_max_post, sigma_post, regime_shift, p_mm_post, p_aa_post, p_ma_post
 
 
 # Standard Kelly test size used for VWAP depth-impact check ($20 notional)
@@ -327,6 +405,8 @@ def _temp_bucket_model_prob(
     days_ahead: int,
     obs_temp_c: Optional[float] = None,
     time_remaining_hours: Optional[float] = None,
+    wu_high_c: Optional[float] = None,
+    state_key: Optional[tuple] = None,
 ) -> tuple[Optional[float], bool, bool]:
     """
     Compute P(T_max ∈ [lo_c, hi_c]) using the correct distribution given evidence.
@@ -356,7 +436,13 @@ def _temp_bucket_model_prob(
           = [Φ((hi − μ)/σ) − Φ((eff_lo − μ)/σ)] / [1 − Φ((T_now − μ)/σ)]
         eff_lo = max(lo_c, T_now).
 
-      The ONLY hard certainty: T_now > hi_c → P(YES) = 0 (monotonic T_max).
+      The ONLY hard certainties:
+        wu_high_c > hi_c → P(YES) = 0  (WU daily high already exceeded ceiling).
+        obs_temp_c > hi_c → P(YES) = 0  (current temp already above ceiling).
+      wu_high_c is the WU running daily maximum — resolution anchor for Polymarket.
+      obs_temp_c is the instantaneous METAR reading — Kalman diurnal model input.
+      These must NOT be conflated: using wu_high_c as Kalman input inflates T_max
+      by up to 2°C and causes phantom spillover into adjacent buckets.
     """
     forecast_mu = weather.get("temp_max_c")
     if forecast_mu is None:
@@ -387,15 +473,20 @@ def _temp_bucket_model_prob(
     hours_elapsed = max(0.0, 24.0 - time_remaining_hours)
 
     # Physical hard constraint: T_max already exceeded bucket ceiling → dead.
-    if hi_c is not None and obs_temp_c > hi_c:
+    # Use wu_high_c (WU running daily max = resolution anchor) if available,
+    # otherwise fall back to obs_temp_c (instantaneous METAR reading).
+    ceiling_obs = wu_high_c if wu_high_c is not None else obs_temp_c
+    if hi_c is not None and ceiling_obs > hi_c:
         return 0.0, True, False
 
     # ── 2-state Kalman filter μ update ───────────────────────────────────────
+    # obs_temp_c = instantaneous METAR temperature → diurnal model input.
+    # wu_high_c  = running daily maximum → used ONLY for ceiling check above.
+    # Conflating them inflates T_max_post by up to 2°C (phantom spillover).
+    #
     # State x = [T_mean, A], observation z = T_now = T_mean + A·cos(φ).
-    # This formulation eliminates the cosine-singularity (division by cos(φ))
-    # by treating it as a Kalman observation with potentially small gain.
+    # P is persisted across 30-min scans via state_key so σ converges.
     # When cos(φ) ≈ 0 (midnight–6am), K → 0 → minimal state update.
-    # When cos(φ) ≈ 1 (peak), observation is maximally informative for A.
 
     T_PEAK_HOUR = 14.0
     phase     = math.pi * (hours_elapsed - T_PEAK_HOUR) / 12.0
@@ -408,21 +499,35 @@ def _temp_bucket_model_prob(
         T_mean_fc = (forecast_mu + t_min_fc) / 2.0 if t_min_fc is not None else forecast_mu * 0.9
         A_fc      = forecast_mu - T_mean_fc   # amplitude: T_max − T_mean
 
-        # Split σ_prior² equally between T_mean and A variance (independent prior)
-        p_mm = sigma_prior ** 2 / 2.0
-        p_aa = sigma_prior ** 2 / 2.0
-        p_ma = 0.0
-        R    = 0.5 ** 2   # METAR/WU measurement noise: ±0.5°C
+        # Load persisted posterior P (sequential Kalman — σ converges over scans).
+        # On first scan or after regime reset, fall back to the uninformed prior.
+        saved_p = _kalman_state_get(state_key) if state_key else None
+        if saved_p is not None:
+            p_mm, p_aa, p_ma = saved_p
+        else:
+            p_mm = sigma_prior ** 2 / 2.0
+            p_aa = sigma_prior ** 2 / 2.0
+            p_ma = 0.0
+        R = 0.5 ** 2   # METAR measurement noise: ±0.5°C
 
-        _, _, t_max_inferred, sigma_post, regime_shift = _kalman_diurnal_update(
-            T_mean_fc, A_fc, p_mm, p_aa, p_ma, obs_temp_c, cos_phase, R
+        _, _, t_max_inferred, sigma_post, regime_shift, p_mm_post, p_aa_post, p_ma_post = (
+            _kalman_diurnal_update(T_mean_fc, A_fc, p_mm, p_aa, p_ma, obs_temp_c, cos_phase, R)
         )
+
+        if state_key:
+            if regime_shift:
+                # Regime shift → reset state so next scan restarts from prior
+                _kalman_state_reset(state_key)
+            else:
+                _kalman_state_set(state_key, p_mm_post, p_aa_post, p_ma_post)
+
         mu    = t_max_inferred
         sigma = sigma_post
 
         print(f"[Comparator] Kalman: fc={forecast_mu:.1f} T_now={obs_temp_c:.1f} "
               f"cosφ={cos_phase:.2f} → T_max_post={mu:.1f} σ={sigma:.2f}"
-              + (" ⚡REGIME" if regime_shift else ""))
+              + (" ⚡REGIME" if regime_shift else "")
+              + (" [resumed P]" if saved_p is not None else " [fresh P]"))
     else:
         regime_shift = False
         # t=0 (no elapsed time): pure forecast, no obs information yet
@@ -724,14 +829,16 @@ def compare_market(market: dict) -> Optional[dict]:
     if market.get("market_subtype") == "temperature_bucket":
         temp_bucket = market.get("temp_bucket", {})
 
-        # ── WU authoritative temperature ──────────────────────────────────────
-        # WU daily high is what Polymarket resolves against.
-        # If WU has data, use it as the observation instead of METAR.
-        # METAR and WU can diverge 1-2°C — fatal for narrow buckets.
-        wu_temp_c   = station_data.get("wu_temp_c")
-        metar_temp  = station_data.get("obs_temp_c")
-        # Prefer WU high (resolution anchor).  Fall back to METAR current.
-        effective_obs_c = wu_temp_c if wu_temp_c is not None else metar_temp
+        # ── WU vs METAR: two separate roles ──────────────────────────────────
+        # wu_temp_c  = WU running daily maximum → resolution anchor (ceiling check).
+        # metar_temp = instantaneous METAR reading → Kalman diurnal model input.
+        # NEVER conflate them: using wu_high as Kalman obs inflates T_max_post
+        # by ~2°C at 10am and causes phantom spillover into adjacent buckets.
+        wu_temp_c  = station_data.get("wu_temp_c")
+        metar_temp = station_data.get("obs_temp_c")
+        # Kalman input: METAR current temp (instantaneous).
+        # Ceiling check: WU daily high (monotonically non-decreasing).
+        kalman_obs_c = metar_temp  # Kalman sees instantaneous temperature
 
         # ── Latency arb zone detection ────────────────────────────────────────
         # < LATENCY_ARB_HOURS: WU's running high IS the market outcome.
@@ -760,10 +867,21 @@ def compare_market(market: dict) -> Optional[dict]:
                 wu_definitive = True
                 wu_definitive_result = "dead"
 
+        # Build state key for Kalman persistence: unique per (location, date, bucket)
+        lo_c_b = temp_bucket.get("lo_c")
+        hi_c_b = temp_bucket.get("hi_c")
+        _state_key = (
+            location.strip().lower(),
+            target_date.isoformat(),
+            f"{lo_c_b}-{hi_c_b}",
+        ) if kalman_obs_c is not None else None
+
         model_prob, obs_adjusted, regime_shift_flag = _temp_bucket_model_prob(
             weather, temp_bucket, days_ahead,
-            obs_temp_c=effective_obs_c,
+            obs_temp_c=kalman_obs_c,
             time_remaining_hours=time_remaining_hours,
+            wu_high_c=wu_temp_c,
+            state_key=_state_key,
         )
         if model_prob is None:
             return {
@@ -1054,6 +1172,49 @@ def compare_all_markets(markets: list[dict]) -> list[dict]:
             results.append(result)
 
     print(f"\n[Comparator] Evaluated {len(results)} markets, skipped {skipped} (no location/date/price)")
+
+    # ── Inter-bucket normalization ────────────────────────────────────────────
+    # Temperature buckets for the same (city, date) are mutually exclusive and
+    # exhaustive.  The sum of model_probability across buckets MUST equal 1.0.
+    # Independent CDF computation produces sums > 1 (they are not normalized).
+    # Fix: group by (location, date), sum raw probs, rescale each to sum=1.
+    # Recompute edge and is_opportunity after normalization.
+    from collections import defaultdict
+    bucket_groups: dict = defaultdict(list)
+    for r in results:
+        if r.get("market_subtype") == "temperature_bucket" and r.get("model_probability") is not None:
+            loc  = (r.get("location_hint") or r.get("location") or "").strip().lower()
+            date_str = r.get("target_date") or r.get("date") or ""
+            if loc and date_str:
+                bucket_groups[(loc, date_str)].append(r)
+
+    for (loc, date_str), group in bucket_groups.items():
+        total = sum(r["model_probability"] for r in group)
+        if total <= 0:
+            continue
+        if abs(total - 1.0) < 0.01:
+            continue  # already normalised — skip
+        print(f"[Comparator] Normalizing buckets {loc} {date_str}: "
+              f"raw_sum={total:.3f} ({len(group)} buckets)")
+        for r in group:
+            r["model_probability"] = round(r["model_probability"] / total, 3)
+            # Recompute edge and action after normalization
+            mp = r.get("market_price_yes")
+            if mp is not None:
+                try:
+                    mp = float(mp)
+                    new_edge = r["model_probability"] - mp
+                    r["edge"] = round(new_edge, 4)
+                    r["abs_edge"] = round(abs(new_edge), 4)
+                    if abs(new_edge) >= EDGE_THRESHOLD and mp not in (0.0, 1.0):
+                        r["is_opportunity"] = True
+                        r["action"] = "BUY YES" if new_edge > 0 else "BUY NO"
+                    else:
+                        r["is_opportunity"] = False
+                        if not r.get("action", "").startswith("SKIP"):
+                            r["action"] = "NO EDGE"
+                except (ValueError, TypeError):
+                    pass
 
     # Sort: opportunities first (by edge size), then the rest
     opportunities = sorted(
