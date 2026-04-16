@@ -1383,6 +1383,9 @@ function buildCard(r, isOpp, rank) {
   const nws_p   = cons.nws;
   const metno_p = cons.metno;
 
+  // exec_edge = paper edge minus bid/ask half-spread (what you actually capture)
+  const execEdge   = r.exec_edge != null ? r.exec_edge : edge;
+  const halfSpread = r.half_spread != null ? r.half_spread : null;
   const edgeSign = edge >= 0 ? '+' : '';
   const edgeClass = edge >= 0 ? '' : 'negative';
   const cardClass = isOpp ? 'opportunity' : 'no-edge';
@@ -1632,7 +1635,10 @@ function buildCard(r, isOpp, rank) {
   <div class="card-head"${top5Badge ? ' style="padding-top:26px"' : ''}>
     <div class="card-header">
       <div class="card-question">${r.question || '—'}</div>
-      <div class="edge-badge ${edgeClass}">${r.edge != null ? edgeSign + pct(edge) : '—'}</div>
+      <div class="edge-badge ${edgeClass}" title="紙面 Edge: ${edgeSign}${pct(edge)}${halfSpread != null ? ' | 半價差: ' + pct(halfSpread) : ''}">
+        ${r.exec_edge != null ? (execEdge >= 0 ? '+' : '') + pct(execEdge) : edgeSign + pct(edge)}
+        ${halfSpread != null ? `<span style="font-size:10px;opacity:0.55;margin-left:3px">-${pct(halfSpread)}</span>` : ''}
+      </div>
     </div>
     <div class="card-meta">
       ${actionTag}

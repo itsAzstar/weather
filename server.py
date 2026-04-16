@@ -148,16 +148,13 @@ def _run_scan() -> list[dict]:
                     r["conviction"]     = cons.get("conviction")
                     r["models_agree"]   = cons.get("models_agree", 0)
 
-                    # Kelly 建議注額：扣除 Polymarket spread 後的有效 edge
-                    # Polymarket spread ~2-3% (conservative estimate 3%).
-                    # If net edge after friction is ≤ 0, bet size = 0.
-                    POLYMARKET_SPREAD_EST = 0.03
-                    raw_edge = abs(r.get("edge") or 0)
-                    net_edge = max(0.0, raw_edge - POLYMARKET_SPREAD_EST)
+                    # Kelly 建議注額：使用已扣除 Spread 的 exec_edge（在 comparator 計算）
+                    # exec_edge = paper_edge - bid/ask half-spread (dynamic, by price level)
+                    exec_edge = abs(r.get("exec_edge") or r.get("edge") or 0)
                     conv_factor = {"high": 1.0, "medium": 0.6, "low": 0.3}.get(
                         cons.get("conviction", "low"), 0.3
                     )
-                    kelly_size = round(net_edge * conv_factor * 10, 2)
+                    kelly_size = round(exec_edge * conv_factor * 10, 2)
                     r["kelly_bet"] = min(kelly_size, 10.0)
                 except Exception:
                     r["consensus"] = None
@@ -252,10 +249,10 @@ def api_opportunities(refresh: bool = False):
                 elif isinstance(v, dict):
                     out[k] = {kk: vv for kk, vv in v.items()
                               if isinstance(vv, (str, int, float, bool, type(None)))}
-            # Ensure WU and latency arb fields are included
+            # Ensure WU, latency arb, and spread fields are included
             for extra_k in ("wu_temp_c", "wu_temp_f", "wu_age_min", "wu_source",
                             "wu_definitive", "wu_definitive_result", "latency_note",
-                            "in_latency_arb_zone"):
+                            "in_latency_arb_zone", "exec_edge", "half_spread"):
                 if extra_k in r and extra_k not in out:
                     v = r[extra_k]
                     if isinstance(v, (str, int, float, bool, type(None))):

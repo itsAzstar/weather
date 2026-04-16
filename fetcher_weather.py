@@ -326,9 +326,29 @@ def _process_ensemble_data(data: dict, target_date: date, lat: float, lon: float
     rain_prob = max(0.0, min(1.0, rain_prob))
 
     # -- Temperature summary --
+    # ── Per-member daily max temperatures → ensemble σ ───────────────────────
+    # σ computed from the spread across ensemble members is the only
+    # physically meaningful uncertainty estimate.  Linear sigma decay is wrong.
+    member_daily_maxes = []
+    for arr in temp_arrays:
+        member_day = [float(arr[i]) for i in target_indices
+                      if i < len(arr) and arr[i] is not None]
+        if member_day:
+            member_daily_maxes.append(max(member_day))
+
+    # σ across member maxes (Bessel-corrected)
+    if len(member_daily_maxes) >= 4:
+        mean_max = sum(member_daily_maxes) / len(member_daily_maxes)
+        variance = sum((x - mean_max) ** 2 for x in member_daily_maxes) / (len(member_daily_maxes) - 1)
+        temp_spread_c = round(variance ** 0.5, 2)  # ensemble σ
+    else:
+        temp_spread_c = None   # not enough members; caller falls back to heuristic
+
     if temp_vals:
         temp_min = min(temp_vals)
-        temp_max = max(temp_vals)
+        temp_max = max(temp_vals) if not member_daily_maxes else (
+            sum(member_daily_maxes) / len(member_daily_maxes)
+        )  # prefer member-mean over all-hours max (more robust)
         temp_mean = sum(temp_vals) / len(temp_vals)
     else:
         temp_min = temp_max = temp_mean = None
@@ -366,7 +386,8 @@ def _process_ensemble_data(data: dict, target_date: date, lat: float, lon: float
         "temp_max_f": round(temp_max * 9 / 5 + 32, 1) if temp_max is not None else None,
         "wind_max_mph": round(wind_max, 1) if wind_max is not None else None,
         "wind_mean_mph": round(wind_mean, 1) if wind_mean is not None else None,
-        "ensemble_members": len(precip_arrays) if precip_arrays else 0,
+        "ensemble_members": len(temp_arrays) if temp_arrays else 0,
+        "temp_spread_c": temp_spread_c,   # σ across ensemble member daily maxes
         "data_points": len(target_indices),
     }
 

@@ -266,8 +266,16 @@ def _temp_bucket_model_prob(
     lo_c = temp_bucket.get("lo_c")
     hi_c = temp_bucket.get("hi_c")
 
-    # Base sigma: Open-Meteo daily-max MAE ~1.2°C at d1, +0.5°C/day lead time
-    sigma_base = max(1.2, 1.2 + (days_ahead - 1) * 0.5)
+    # ── σ: ensemble spread is ground truth; heuristic is fallback ─────────────
+    # Open-Meteo Ensemble API returns σ across member daily maxes.
+    # This reflects actual atmospheric uncertainty — non-linear, not heuristic.
+    # Only fall back to the lead-time heuristic when ensemble data is absent.
+    ensemble_spread = weather.get("temp_spread_c")
+    if ensemble_spread is not None and ensemble_spread > 0.2:
+        sigma_base = float(ensemble_spread)
+    else:
+        # Fallback heuristic: Open-Meteo daily-max MAE ~1.2°C at d1, +0.5°C/day
+        sigma_base = max(1.2, 1.2 + (days_ahead - 1) * 0.5)
 
     # ── Regime A: pure forecast, no obs ───────────────────────────────────────
     if obs_temp_c is None or time_remaining_hours is None:
@@ -277,43 +285,76 @@ def _temp_bucket_model_prob(
 
     # ── Regime B: truncated normal given T_now ────────────────────────────────
     obs_adjusted = True
+    hours_elapsed = max(0.0, 24.0 - time_remaining_hours)
+    day_progress  = min(1.0, hours_elapsed / 24.0)
 
     # Physical hard constraint: T_max already exceeded bucket ceiling → dead.
-    # This is the ONLY "certain" case — monotonic max temp is a physical fact.
     if hi_c is not None and obs_temp_c > hi_c:
         return 0.0, True
 
-    # Residual sigma shrinks as the day progresses (less temperature movement
-    # possible). At day start: full sigma_base. At end of day: ~0.5°C (rounding).
-    hours_elapsed = max(0.0, 24.0 - time_remaining_hours)
-    day_progress  = min(1.0, hours_elapsed / 24.0)
+    # ── Bayesian μ update ─────────────────────────────────────────────────────
+    # When T_now > forecast_mu the NWP was wrong about today's atmospheric state
+    # (e.g. unexpected foehn, early cloud clearance).  Anchoring on the stale
+    # forecast μ makes the truncated distribution pathologically right-skewed.
+    #
+    # Fix: estimate μ_adjusted by projecting T_now forward along the observed
+    # warming slope to the expected daily peak (~14:00 local = hour 14).
+    # Then blend prior (forecast) and posterior (trajectory-projected) with
+    # weights that increase with both deviation magnitude and day progress.
+    if obs_temp_c > forecast_mu and hours_elapsed > 1.0:
+        t_min = weather.get("temp_min_c")
+        if t_min is None:
+            t_min = forecast_mu - 8.0   # typical diurnal range fallback
+
+        # Observed warming slope from morning minimum to now
+        slope = (obs_temp_c - t_min) / hours_elapsed   # °C/hour
+
+        PEAK_HOUR = 14.0   # typical max temp ~14:00 local
+        if hours_elapsed < PEAK_HOUR:
+            hours_to_peak = PEAK_HOUR - hours_elapsed
+            # Slope dampens as peak approaches (~45% of slope for remaining hours)
+            t_projected = obs_temp_c + slope * hours_to_peak * 0.45
+        else:
+            # Post-peak: daily max is approximately T_now
+            t_projected = obs_temp_c
+
+        # Blend weights
+        # - deviation weight: large anomaly = strong evidence of structural shift
+        # - time weight: later in day = obs is more informative about final max
+        dev_weight  = min(0.5, (obs_temp_c - forecast_mu) / 4.0)
+        time_weight = min(0.5, day_progress)
+        blend = min(0.85, dev_weight + time_weight)
+
+        mu = (1.0 - blend) * forecast_mu + blend * t_projected
+        print(f"[Comparator] Bayes μ: fc={forecast_mu:.1f} obs={obs_temp_c:.1f} "
+              f"proj={t_projected:.1f} blend={blend:.2f} → μ={mu:.1f}")
+    else:
+        mu = forecast_mu
+
+    # Residual sigma: ensemble spread × (1 - fraction of day that has solidified).
+    # The ensemble σ still reflects full-day uncertainty; shrink proportionally
+    # as T_now pins down the lower bound of T_max.
     sigma = max(0.5, sigma_base * (1.0 - day_progress * 0.55))
 
-    # Use the better of obs and forecast as distribution centre.
-    # If obs > forecast, the model is lagging — centre on obs.
-    mu = max(forecast_mu, obs_temp_c)
-
-    # Normalising constant: P(T_max >= T_now) in N(mu, sigma)
-    z_a = (obs_temp_c - mu) / sigma
-    p_above = 1.0 - _norm_cdf(z_a)  # = Φ((mu - T_now) / sigma)
+    # Normalising constant: P(T_max >= T_now) in N(μ, σ)
+    z_a    = (obs_temp_c - mu) / sigma
+    p_above = 1.0 - _norm_cdf(z_a)
 
     if p_above < 1e-7:
-        # Numerical edge: T_now far above mu.  All mass concentrated right
-        # at T_now — just check whether T_now falls inside the bucket.
+        # Numerical edge: T_now >> μ.  All mass concentrated at T_now.
         in_lo = lo_c is None or obs_temp_c >= lo_c
         in_hi = hi_c is None or obs_temp_c <= hi_c
-        return (0.95 if (in_lo and in_hi) else 0.01), True
+        return (0.93 if (in_lo and in_hi) else 0.02), True
 
-    # Effective lower limit: T_max can't go below what's already been recorded
+    # P(lo ≤ T_max ≤ hi | T_max ≥ T_now)
     eff_lo = max(lo_c, obs_temp_c) if lo_c is not None else obs_temp_c
-    eff_hi = hi_c  # upper limit unchanged (temps CAN still rise)
+    eff_hi = hi_c   # upper limit unchanged — temps CAN still rise
 
     z_lo = (eff_lo - mu) / sigma
     z_hi = (eff_hi - mu) / sigma if eff_hi is not None else math.inf
     p_hi = _norm_cdf(z_hi) if eff_hi is not None else 1.0
     p_lo = _norm_cdf(z_lo)
 
-    # Subtract mass below truncation point from both numerator and denominator
     p_in_range = p_hi - p_lo
     prob = p_in_range / p_above
     return round(max(0.0, min(0.97, prob)), 3), True
@@ -321,6 +362,44 @@ def _temp_bucket_model_prob(
 
 def _celsius_to_fahrenheit(c: float) -> float:
     return c * 9 / 5 + 32
+
+
+def _estimate_half_spread(price_yes: float, days_ahead: int) -> float:
+    """
+    Estimate the one-way execution cost (half bid-ask spread) for a Polymarket
+    weather market.  This is the cost you pay vs the mid-price when hitting
+    a market order — the number that must be deducted from paper edge to get
+    executable edge.
+
+    Empirical Polymarket weather market spreads:
+    - Deep in-the-money / out-of-the-money (>80% or <20%): wide spreads 8-15¢
+    - Remote markets (day-ahead, competitive): 3-6¢ half-spread
+    - Micro-cap / thin books: can be 10-25¢ wide
+
+    We use price distance from 0.5 as proxy for liquidity / spread.
+    Far-from-mid = less liquid = wider spread.
+    """
+    mid_distance = abs(price_yes - 0.5)
+
+    # Base half-spread by lead time (day-ahead markets thinner than same-day)
+    if days_ahead >= 2:
+        base = 0.05    # typical day+2 half-spread
+    elif days_ahead == 1:
+        base = 0.04
+    else:
+        base = 0.03    # intraday: tighter (more activity)
+
+    # Widen for extreme prices (less liquidity at tails)
+    if mid_distance > 0.35:   # price < 0.15 or > 0.85
+        spread_mult = 2.5
+    elif mid_distance > 0.25:  # price < 0.25 or > 0.75
+        spread_mult = 1.8
+    elif mid_distance > 0.15:  # price < 0.35 or > 0.65
+        spread_mult = 1.3
+    else:
+        spread_mult = 1.0
+
+    return min(0.15, base * spread_mult)
 
 
 def _calculate_model_probability(
@@ -653,12 +732,26 @@ def compare_market(market: dict) -> Optional[dict]:
                 "wu_definitive": wu_definitive,
             }
 
-        edge = round(model_prob - market_price_yes, 4)
-        abs_edge = abs(edge)
+        # ── Spread-adjusted edge ───────────────────────────────────────────
+        # market_price_yes is the mid-price (or last trade).
+        # To BUY YES you pay ask = mid + half_spread.
+        # To BUY NO you pay ask_no = 1 - (mid - half_spread) = 1 - bid_yes.
+        # The EDGE_THRESHOLD gate must see executable edge, not paper edge.
+        half_spread = _estimate_half_spread(market_price_yes, days_ahead)
+        raw_edge    = model_prob - market_price_yes
+        # Executable edge deducts execution cost in the direction of the trade
+        if raw_edge > 0:
+            exec_edge = raw_edge - half_spread   # BUY YES: pay ask
+        else:
+            exec_edge = raw_edge + half_spread   # BUY NO: pay ask_no
+
+        edge     = round(raw_edge, 4)
+        abs_edge = abs(exec_edge)
+
         # Cap: edge >55% almost certainly means model error, not real arb.
         # Exception: WU definitive cases legitimately produce >90% edges.
         EDGE_CAP = 0.55
-        if abs_edge > EDGE_CAP and not wu_definitive:
+        if abs(raw_edge) > EDGE_CAP and not wu_definitive:
             return {
                 **market,
                 "model_probability": model_prob,
@@ -666,10 +759,12 @@ def compare_market(market: dict) -> Optional[dict]:
                 "weather_temp_max_c": weather.get("temp_max_c"),
                 "weather_temp_max_f": weather.get("temp_max_f"),
                 "edge": edge,
-                "abs_edge": abs_edge,
+                "abs_edge": round(abs(raw_edge), 4),
+                "exec_edge": round(exec_edge, 4),
+                "half_spread": round(half_spread, 4),
                 "action": "HOLD",
                 "is_opportunity": False,
-                "skip_reason": f"Edge {abs_edge:.0%} exceeds cap {EDGE_CAP:.0%} — likely model/forecast error",
+                "skip_reason": f"Edge {abs(raw_edge):.0%} exceeds cap {EDGE_CAP:.0%} — likely model/forecast error",
                 "days_ahead": days_ahead,
                 **station_data,
                 "time_remaining_hours": round(time_remaining_hours, 2),
@@ -677,14 +772,14 @@ def compare_market(market: dict) -> Optional[dict]:
                 "in_latency_arb_zone": in_latency_arb_zone,
                 "wu_definitive": wu_definitive,
             }
-        is_opp = abs_edge > EDGE_THRESHOLD
-        action = ("BUY YES" if edge > 0 else "BUY NO") if is_opp else "HOLD"
+        # is_opportunity: based on EXECUTABLE edge, not paper edge
+        is_opp = exec_edge > EDGE_THRESHOLD if raw_edge > 0 else (-exec_edge) > EDGE_THRESHOLD
+        action = ("BUY YES" if raw_edge > 0 else "BUY NO") if is_opp else "HOLD"
 
-        # ── Latency arb zone: no WU data, forecast model only ─────────────────
-        # If we're in the latency zone without WU confirmation, note it.
+        # ── Latency arb zone warning ───────────────────────────────────────────
         latency_note = None
         if in_latency_arb_zone and not wu_definitive and wu_temp_c is None:
-            latency_note = f"HFT zone ({time_remaining_hours:.0f}h left, no WU data) — model edge may not be executable"
+            latency_note = f"HFT zone ({time_remaining_hours:.0f}h left, no WU data) — model edge not executable"
         elif in_latency_arb_zone and not wu_definitive and wu_temp_c is not None:
             latency_note = f"WU high {wu_temp_c:.1f}°C observed but not definitive — {time_remaining_hours:.0f}h left"
 
@@ -694,12 +789,12 @@ def compare_market(market: dict) -> Optional[dict]:
             **market,
             "model_probability": model_prob,
             "weather_data": weather,
-            # weather_temp_max_c = forecast value (for display)
-            # obs overrides this in the UI if obs > forecast
             "weather_temp_max_c": fc_max_c,
             "weather_temp_max_f": fc_max_f,
             "edge": edge,
-            "abs_edge": abs_edge,
+            "abs_edge": round(abs(raw_edge), 4),
+            "exec_edge": round(exec_edge, 4),   # what you actually capture after spread
+            "half_spread": round(half_spread, 4),
             "action": action,
             "is_opportunity": is_opp,
             "skip_reason": None,
@@ -750,24 +845,29 @@ def compare_market(market: dict) -> Optional[dict]:
     except (ValueError, TypeError):
         return None
 
-    # Calculate edge
-    edge = model_prob - market_price_yes
-    abs_edge = abs(edge)
-    is_opportunity = abs_edge > EDGE_THRESHOLD
+    # ── Spread-adjusted edge ─────────────────────────────────────────────────
+    raw_edge    = model_prob - market_price_yes
+    half_spread = _estimate_half_spread(market_price_yes, days_ahead)
+    exec_edge   = raw_edge - half_spread if raw_edge > 0 else raw_edge + half_spread
+
+    is_opportunity = (exec_edge > EDGE_THRESHOLD if raw_edge > 0
+                      else -exec_edge > EDGE_THRESHOLD)
 
     if not is_opportunity:
         action = "SKIP"
-    elif edge > 0:
-        action = "BUY YES"   # Model says more likely than market thinks
+    elif raw_edge > 0:
+        action = "BUY YES"
     else:
-        action = "BUY NO"    # Model says less likely than market thinks
+        action = "BUY NO"
 
     return {
         **market,
         "model_probability": model_prob,
         "weather_data": weather,
-        "edge": round(edge, 4),
-        "abs_edge": round(abs_edge, 4),
+        "edge": round(raw_edge, 4),
+        "abs_edge": round(abs(raw_edge), 4),
+        "exec_edge": round(exec_edge, 4),
+        "half_spread": round(half_spread, 4),
         "action": action,
         "is_opportunity": is_opportunity,
         "skip_reason": None,
