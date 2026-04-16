@@ -1122,7 +1122,7 @@ async def compare_market(market: dict) -> Optional[dict]:
     }
 
 
-_CHUNK_SIZE = 50   # markets per concurrent gather batch
+_CHUNK_SIZE = 100  # markets per concurrent gather batch
 
 
 async def compare_all_markets(markets: list[dict]) -> list[dict]:

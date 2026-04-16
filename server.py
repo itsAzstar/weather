@@ -133,7 +133,9 @@ async def _run_scan() -> list[dict]:
         rest       = [m for m in live if _end_day(m) not in (today_s, tomorrow, day2)]
 
         # Assemble: tomorrow first (best betting window), then today, day2, rest
-        live = (tomorrow_m + today_m + day2_m + rest)[:400]
+        # Cap at 80 — each market triggers weather + station + WU fetches.
+        # 80 markets ≈ 25 unique cities ≈ 25s scan on Railway (was 200 → 90s+).
+        live = (tomorrow_m + today_m + day2_m + rest)[:80]
         markets = live
         print(f"[Scan] Pre-filtered to {len(markets)} competitive live markets")
     else:
@@ -141,28 +143,6 @@ async def _run_scan() -> list[dict]:
 
     # 2. 解析
     markets = parse_all_markets(markets, reference_date=today)
-
-    # 2b. Pre-warm weather cache: collect unique (location, date) pairs and
-    #     fetch them with controlled concurrency (6 workers) before the main
-    #     compare step. The cross-run cache means subsequent scans reuse results.
-    from comparator import _get_weather_cached
-
-    unique_loc_dates: set[tuple] = set()
-    for m in markets:
-        p = m.get("parsed", {})
-        loc = m.get("location_hint") or p.get("location")
-        d_str = p.get("target_date")
-        if loc and d_str:
-            try:
-                unique_loc_dates.add((loc, date.fromisoformat(d_str)))
-            except ValueError:
-                pass
-
-    print(f"[Scan] Pre-fetching weather for {len(unique_loc_dates)} unique city+date combos...")
-    await asyncio.gather(*[
-        _get_weather_cached(loc, d) for loc, d in unique_loc_dates
-    ])
-    print(f"[Scan] Weather pre-fetch done.")
 
     # 3. 基本比較（Open-Meteo Ensemble — uses cached weather）
     results = await compare_all_markets(markets)
@@ -219,10 +199,21 @@ async def _run_scan() -> list[dict]:
                 pass
         return r
 
-    # asyncio.to_thread runs sync _enrich_one in the default thread pool without blocking the loop
-    enriched = list(await asyncio.gather(*[
-        asyncio.to_thread(_enrich_one, r) for r in results
+    # Consensus enrichment only for top-10 opportunities (urllib sync calls are slow).
+    # Non-opportunity markets get passed through unchanged.
+    opps_sorted = sorted(
+        [r for r in results if r.get("is_opportunity")],
+        key=lambda r: abs(r.get("exec_edge") or r.get("edge") or 0),
+        reverse=True,
+    )
+    top_opps  = opps_sorted[:10]
+    rest_opps = opps_sorted[10:]
+    non_opps  = [r for r in results if not r.get("is_opportunity")]
+
+    enriched_top = list(await asyncio.gather(*[
+        asyncio.to_thread(_enrich_one, r) for r in top_opps
     ]))
+    enriched = enriched_top + rest_opps + non_opps
 
     # ── Portfolio Kelly: cap total exposure for mutually exclusive buckets ───────
     # Temperature buckets for the same (city, date) are mutually exclusive events

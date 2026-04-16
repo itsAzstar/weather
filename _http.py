@@ -20,7 +20,10 @@ def get_session() -> aiohttp.ClientSession:
 
 async def init_session() -> None:
     global _session
-    timeout = aiohttp.ClientTimeout(total=15, connect=5)
+    # Railway containers have higher outbound latency than local.
+    # 15s total was too tight — Polymarket Gamma API first page timed out,
+    # causing fetch_gamma_weather_events to return [] → mock fallback.
+    timeout = aiohttp.ClientTimeout(total=30, connect=10)
     connector = aiohttp.TCPConnector(limit=20, limit_per_host=4)
     _session = aiohttp.ClientSession(
         timeout=timeout,
