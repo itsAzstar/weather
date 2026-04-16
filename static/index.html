@@ -2254,11 +2254,29 @@ async function loadOpportunities(forceRefresh = false) {
   btn.disabled = true;
   btn.textContent = '掃描中…';
 
-  try {
+  // Helper: fetch data then poll until scanning=false (handles Railway 30s timeout)
+  async function fetchWithPoll(forceRefresh) {
     const url = forceRefresh ? '/api/refresh' : '/api/opportunities';
     const method = forceRefresh ? 'POST' : 'GET';
     const r = await fetch(url, { method });
-    const d = await r.json();
+    let d = await r.json();
+    if (!d.scanning) return d;
+    // Server is scanning in background — poll every 3s until done (max 3 min)
+    let elapsed = 0;
+    const MAX_WAIT = 180000;
+    while (d.scanning && elapsed < MAX_WAIT) {
+      const secs = Math.round((MAX_WAIT - elapsed) / 1000);
+      btn.textContent = `掃描中… (${secs}s)`;
+      await new Promise(res => setTimeout(res, 3000));
+      elapsed += 3000;
+      const pr = await fetch('/api/opportunities');
+      d = await pr.json();
+    }
+    return d;
+  }
+
+  try {
+    const d = await fetchWithPoll(forceRefresh);
 
     // Scan time
     if (d.scanned_at) {

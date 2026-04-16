@@ -40,7 +40,7 @@ async def _lifespan(app: FastAPI):
     async def _bg_warm():
         await asyncio.sleep(2)
         try:
-            await api_opportunities(refresh=False)
+            await _run_scan_task()
         except Exception:
             pass
 
@@ -60,8 +60,7 @@ async def _lifespan(app: FastAPI):
         await asyncio.sleep(60)
         while True:
             try:
-                await api_opportunities(refresh=True)
-                print("[Scheduler] Auto-scan complete")
+                await _run_scan_task()
             except Exception as e:
                 print(f"[Scheduler] Auto-scan error: {e}")
             await asyncio.sleep(3 * 60)
@@ -94,6 +93,7 @@ _cache: dict = {}
 _cache_ts:   float = 0.0
 CACHE_TTL   = 30 * 60   # 30 minutes
 _scan_lock  = asyncio.Lock()    # prevent concurrent scans (asyncio-safe)
+_scan_in_progress: bool = False  # true while a scan task is running
 
 
 def _is_cache_valid() -> bool:
@@ -279,102 +279,123 @@ def index():
     return FileResponse(str(STATIC_DIR / "index.html"))
 
 
+def _build_payload(results: list[dict]) -> dict:
+    """將 _run_scan 結果序列化成 API payload（供 api_opportunities 和背景任務共用）。"""
+    raw_opps = [r for r in results if r.get("is_opportunity")]
+    no_edge  = [r for r in results if not r.get("is_opportunity") and not r.get("skip_reason")]
+    skipped  = [r for r in results if r.get("skip_reason")]
+
+    _conv_w = {"high": 1.0, "medium": 0.65, "low": 0.35}
+    _dir_w  = {"BUY YES": 1.0, "BUY NO": 0.85, "HOLD": 0.0}
+
+    def _score(r: dict) -> float:
+        edge = abs(r.get("abs_edge") or r.get("edge") or 0)
+        conv = _conv_w.get(r.get("conviction") or "low", 0.35)
+        dirw = _dir_w.get(r.get("action") or "HOLD", 0.85)
+        return edge * conv * dirw
+
+    opportunities = sorted(raw_opps, key=_score, reverse=True)
+    no_edge = sorted(no_edge, key=lambda r: abs(r.get("edge") or 0), reverse=True)
+
+    def _clean(r: dict) -> dict:
+        out = {}
+        for k, v in r.items():
+            if k == "consensus" and isinstance(v, dict):
+                out[k] = v
+            elif isinstance(v, (str, int, float, bool, type(None))):
+                out[k] = v
+            elif isinstance(v, list) and k in ("sources_used",):
+                out[k] = [x for x in v if isinstance(x, str)]
+            elif isinstance(v, dict):
+                out[k] = {kk: vv for kk, vv in v.items()
+                          if isinstance(vv, (str, int, float, bool, type(None)))}
+        for extra_k in ("wu_temp_c", "wu_temp_f", "wu_age_min", "wu_source",
+                        "wu_definitive", "wu_definitive_result", "latency_note",
+                        "in_latency_arb_zone", "exec_edge", "exec_edge_vwap",
+                        "half_spread", "kelly_portfolio_scaled", "kelly_group_total_raw",
+                        "regime_shift"):
+            if extra_k in r and extra_k not in out:
+                v = r[extra_k]
+                if isinstance(v, (str, int, float, bool, type(None))):
+                    out[extra_k] = v
+        return out
+
+    return {
+        "scanned_at":     datetime.now(timezone.utc).isoformat(),
+        "edge_threshold": EDGE_THRESHOLD,
+        "opportunities":  [_clean(r) for r in opportunities],
+        "no_edge":        [_clean(r) for r in no_edge],
+        "skipped":        [_clean(r) for r in skipped],
+        "summary": {
+            "total":         len(results),
+            "opportunities": len(opportunities),
+            "no_edge":       len(no_edge),
+            "skipped":       len(skipped),
+        },
+        "cached": False,
+    }
+
+
+async def _run_scan_task():
+    """
+    Background scan task: acquire lock → scan → update cache → release.
+    Called by both the background scheduler and the non-blocking refresh endpoint.
+    Never blocks an HTTP request — callers fire-and-forget with asyncio.create_task().
+    """
+    global _cache, _cache_ts, _scan_in_progress
+    if _scan_in_progress:
+        return  # already scanning, skip
+    _scan_in_progress = True
+    try:
+        async with _scan_lock:
+            results = await _run_scan()
+            payload = _build_payload(results)
+            _cache    = payload
+            _cache_ts = time.time()
+            print(f"[Scan] Done — {payload['summary']['opportunities']} opportunities")
+    except Exception as e:
+        print(f"[Scan] Error: {e}")
+    finally:
+        _scan_in_progress = False
+
+
 @app.get("/api/opportunities")
 async def api_opportunities(refresh: bool = False):
-    global _cache, _cache_ts
-    if not refresh and _is_cache_valid() and _cache:
-        return JSONResponse({**_cache, "cached": True})
+    """
+    Returns cached scan results immediately.
+    If cache is stale (or refresh=True), triggers a background scan and returns
+    whatever is in cache (or an empty scaffold with scanning=True).
+    The client should poll every few seconds until scanning=False.
 
-    # Only one scan at a time — if already scanning, wait and return cached result
-    try:
-        await asyncio.wait_for(_scan_lock.acquire(), timeout=120)
-    except asyncio.TimeoutError:
-        if _cache:
-            return JSONResponse({**_cache, "cached": True, "note": "scan_in_progress"})
-        return JSONResponse({"error": "scan timeout", "opportunities": [], "no_edge": [], "skipped": []}, status_code=503)
+    This design keeps Railway's 30-second HTTP timeout happy — the endpoint
+    never waits for a full 60-120 second scan to complete.
+    """
+    global _cache_ts
 
-    try:
-        # Double-check cache after acquiring lock (another coroutine may have just scanned)
-        if not refresh and _is_cache_valid() and _cache:
-            return JSONResponse({**_cache, "cached": True})
+    if refresh:
+        _cache_ts = 0.0  # invalidate so next poll triggers a new scan
 
-        results = await _run_scan()
-        scanned_at = datetime.now(timezone.utc).isoformat()
+    # If cache is fresh, return it immediately
+    if _is_cache_valid() and _cache and not refresh:
+        return JSONResponse({**_cache, "cached": True, "scanning": False})
 
-        raw_opps = [r for r in results if r.get("is_opportunity")]
-        no_edge  = [r for r in results if not r.get("is_opportunity") and not r.get("skip_reason")]
-        skipped  = [r for r in results if r.get("skip_reason")]
+    # Trigger background scan if not already running
+    if not _scan_in_progress:
+        asyncio.create_task(_run_scan_task())
 
-        # ── Sort opportunities: best → worst ────────────────────────────────
-        # Score = abs_edge × conviction_weight × direction_bonus
-        # BUY YES > BUY NO (buying is more natural, shorting needs margin)
-        # high conviction > medium > low
-        _conv_w = {"high": 1.0, "medium": 0.65, "low": 0.35}
-        _dir_w  = {"BUY YES": 1.0, "BUY NO": 0.85, "HOLD": 0.0}
+    # Return stale cache (if any) immediately — client polls until scanning=False
+    if _cache:
+        return JSONResponse({**_cache, "cached": True, "scanning": _scan_in_progress})
 
-        def _score(r: dict) -> float:
-            edge    = abs(r.get("abs_edge") or r.get("edge") or 0)
-            conv    = _conv_w.get(r.get("conviction") or "low", 0.35)
-            dirw    = _dir_w.get(r.get("action") or "HOLD", 0.85)
-            return edge * conv * dirw
-
-        opportunities = sorted(raw_opps, key=_score, reverse=True)
-
-        # no_edge sorted by abs_edge descending so closest-to-opportunity first
-        no_edge = sorted(no_edge, key=lambda r: abs(r.get("edge") or 0), reverse=True)
-
-        # 序列化：移除不可 JSON 的欄位
-        # New primitive fields passed through automatically:
-        #   station_icao (str), station_name (str), obs_temp_c (float), obs_temp_f (float),
-        #   obs_age_min (float), time_remaining_hours (float), obs_adjusted (bool)
-        def _clean(r: dict) -> dict:
-            out = {}
-            for k, v in r.items():
-                if k == "consensus" and isinstance(v, dict):
-                    # Pass consensus dict through fully (includes sources_used list)
-                    out[k] = v
-                elif isinstance(v, (str, int, float, bool, type(None))):
-                    out[k] = v
-                elif isinstance(v, list) and k in ("sources_used",):
-                    # Allow specific list fields through
-                    out[k] = [x for x in v if isinstance(x, str)]
-                elif isinstance(v, dict):
-                    out[k] = {kk: vv for kk, vv in v.items()
-                              if isinstance(vv, (str, int, float, bool, type(None)))}
-            # Ensure WU, latency arb, spread, VWAP, and portfolio fields are included
-            for extra_k in ("wu_temp_c", "wu_temp_f", "wu_age_min", "wu_source",
-                            "wu_definitive", "wu_definitive_result", "latency_note",
-                            "in_latency_arb_zone", "exec_edge", "exec_edge_vwap",
-                            "half_spread", "kelly_portfolio_scaled", "kelly_group_total_raw",
-                            "regime_shift"):
-                if extra_k in r and extra_k not in out:
-                    v = r[extra_k]
-                    if isinstance(v, (str, int, float, bool, type(None))):
-                        out[extra_k] = v
-            return out
-
-        payload = {
-            "scanned_at":    scanned_at,
-            "edge_threshold": EDGE_THRESHOLD,
-            "opportunities": [_clean(r) for r in opportunities],
-            "no_edge":        [_clean(r) for r in no_edge],
-            "skipped":        [_clean(r) for r in skipped],
-            "summary": {
-                "total":         len(results),
-                "opportunities": len(opportunities),
-                "no_edge":       len(no_edge),
-                "skipped":       len(skipped),
-            },
-            "cached": False,
-        }
-        _cache    = payload
-        _cache_ts = time.time()
-        return JSONResponse(payload)
-
-    except Exception as e:
-        return JSONResponse({"error": str(e), "opportunities": [], "no_edge": [], "skipped": []}, status_code=500)
-    finally:
-        _scan_lock.release()
+    # First-ever load: no cache yet, return empty scaffold
+    return JSONResponse({
+        "scanning":      True,
+        "cached":        False,
+        "opportunities": [],
+        "no_edge":       [],
+        "skipped":       [],
+        "summary":       {"total": 0, "opportunities": 0, "no_edge": 0, "skipped": 0},
+    })
 
 
 @app.get("/api/latency")
@@ -414,10 +435,20 @@ async def api_history_resolved(days: int = 90):
 
 @app.post("/api/refresh")
 async def api_refresh():
-    """強制清除快取並重新掃描。"""
+    """
+    立即回傳（不等待掃描完成），觸發背景掃描任務。
+    客戶端應輪詢 GET /api/opportunities 直到 scanning=False。
+    Railway HTTP timeout 為 30s，完整掃描需 60-120s，故不能同步等待。
+    """
     global _cache_ts
     _cache_ts = 0.0
-    return await api_opportunities(refresh=True)
+    if not _scan_in_progress:
+        asyncio.create_task(_run_scan_task())
+    return JSONResponse({
+        "scanning": True,
+        "message":  "Scan triggered — poll /api/opportunities for results",
+        **({"cached": True, **{k: v for k, v in _cache.items() if k != "cached"}} if _cache else {}),
+    })
 
 
 # Startup logic moved to _lifespan context manager (defined near top of file).
