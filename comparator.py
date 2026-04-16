@@ -19,7 +19,7 @@ from fetcher_weather import (
 )
 from fetcher_stations import resolve_station, get_station_obs
 from fetcher_wu import get_wu_temp_cached
-from fetcher_polymarket import fetch_clob_book
+from fetcher_polymarket import fetch_clob_book, sweep_book as _sweep_book
 
 MAX_DAYS_AHEAD = 10       # Only consider markets resolving within this window
 EDGE_THRESHOLD = 0.08     # 8% minimum divergence to flag as opportunity (5% had too much noise)
@@ -228,34 +228,128 @@ def _norm_cdf(x: float) -> float:
     return (1.0 + math.erf(x / math.sqrt(2))) / 2.0
 
 
+_REGIME_SHIFT_SIGMA = 3.0    # innovation threshold in units of σ_y
+_REGIME_P_BOOST    = 10.0   # multiply prior P by this when regime shift detected
+
+
+def _kalman_diurnal_update(
+    T_mean_prior: float,
+    A_prior: float,
+    p_mm: float,
+    p_aa: float,
+    p_ma: float,
+    obs_temp_c: float,
+    cos_phase: float,
+    R: float,
+) -> tuple[float, float, float, float, bool]:
+    """
+    1-observation 2-state Kalman filter update with regime-shift detection.
+
+    State x = [T_mean, A], where T_max = T_mean + A.
+    Observation model: z = T_now = T_mean + A·cos(φ), i.e. H = [1, c].
+
+    When cos(φ) ≈ 0 (near midnight), the Kalman gain K → 0 and the observation
+    barely updates the state — no singularity.  This replaces the algebraic
+    A_obs = (T_now − T_mean) / cos(φ) which explodes at small cos_phase values.
+
+    Regime-shift detection (Innovation Check):
+        y_norm = |y| / σ_y where σ_y = sqrt(S)
+        If y_norm > _REGIME_SHIFT_SIGMA (3σ), the residual is non-Gaussian —
+        a weather event (cold front, convective downdraft) has invalidated the
+        diurnal model.  In that case P is boosted by _REGIME_P_BOOST so the
+        Kalman gain K → 1, forcing the posterior to trust the observation
+        rather than the prior.  This prevents the model from dismissing a
+        real 5°C regime change as an outlier.
+
+    Returns (T_mean_post, A_post, T_max_post, sigma_T_max_post, regime_shift_flag).
+    """
+    c = cos_phase
+
+    # Innovation
+    y = obs_temp_c - (T_mean_prior + c * A_prior)
+
+    # Innovation covariance S = H·P·H' + R  (scalar since H is 1×2)
+    S = p_mm + 2.0 * c * p_ma + c * c * p_aa + R
+    if S < 1e-9:
+        # Degenerate: near-zero innovation variance → no update
+        T_max_post = T_mean_prior + A_prior
+        sigma_post = math.sqrt(max(1e-4, p_mm + 2.0 * p_ma + p_aa))
+        return T_mean_prior, A_prior, T_max_post, sigma_post, False
+
+    # ── Regime-shift check ────────────────────────────────────────────────────
+    # A standard Kalman filter assumes Gaussian noise.  A convective downdraft
+    # or cold front can drop temperature 5°C in 30 min — not Gaussian.
+    # As the day progresses, σ_prior stays fixed (we recompute P fresh each
+    # call), but if we ran a sequential filter its P would converge → small K.
+    # This check defends against that: any innovation > 3σ_y triggers a P reset
+    # that forces K → near 1 so the model immediately trusts the anomaly.
+    sigma_inno   = math.sqrt(S)
+    regime_shift = abs(y) > _REGIME_SHIFT_SIGMA * sigma_inno
+
+    if regime_shift:
+        # Boost P: multiply prior variances by _REGIME_P_BOOST.
+        # This makes K large → state update leans heavily toward obs.
+        p_mm = p_mm * _REGIME_P_BOOST
+        p_aa = p_aa * _REGIME_P_BOOST
+        p_ma = p_ma * _REGIME_P_BOOST
+        S    = p_mm + 2.0 * c * p_ma + c * c * p_aa + R
+        print(f"[Kalman] ⚡ Regime shift: innov={y:+.2f}°C "
+              f"({abs(y)/sigma_inno:.1f}σ > {_REGIME_SHIFT_SIGMA}σ) — P×{_REGIME_P_BOOST}")
+
+    # Kalman gains:  K = P·H' / S
+    k_m = (p_mm + c * p_ma) / S
+    k_a = (p_ma + c * p_aa) / S
+
+    # State update
+    T_mean_post = T_mean_prior + k_m * y
+    A_post      = A_prior      + k_a * y
+    T_max_post  = T_mean_post  + A_post
+
+    # Posterior covariance  P_post = (I − K·H)·P
+    p_mm_post = p_mm - k_m * (p_mm  + c * p_ma)
+    p_aa_post = p_aa - k_a * (p_ma  + c * p_aa)
+    p_ma_post = p_ma - k_m * (p_ma  + c * p_aa)
+
+    # Var(T_max_post) = Var(T_mean + A) = p_mm + 2·p_ma + p_aa  (posterior)
+    var_T_max = p_mm_post + 2.0 * p_ma_post + p_aa_post
+    sigma_post = math.sqrt(max(1e-4, var_T_max))
+
+    return T_mean_post, A_post, T_max_post, sigma_post, regime_shift
+
+
+# Standard Kelly test size used for VWAP depth-impact check ($20 notional)
+_VWAP_TEST_USD = 20.0
+
+
 def _temp_bucket_model_prob(
     weather: dict,
     temp_bucket: dict,
     days_ahead: int,
     obs_temp_c: Optional[float] = None,
     time_remaining_hours: Optional[float] = None,
-) -> tuple[Optional[float], bool]:
+) -> tuple[Optional[float], bool, bool]:
     """
     Compute P(T_max ∈ [lo_c, hi_c]) using the correct distribution given evidence.
+    Returns (prob, obs_adjusted, regime_shift).
+    regime_shift=True when the Kalman innovation exceeded 3σ — a weather event
+    (cold front, convective downdraft) invalidated the diurnal model mid-day.
 
     Regime A (no obs): T_max ~ N(μ_forecast, σ²)
       σ = ensemble member std-dev if available; else lead-time heuristic.
 
     Regime B (obs available): Diurnal Bayesian update + Truncated Normal.
 
-      Step 1 — diurnal cosine model infers T_max from T_now:
-        T(t) = T_mean + A × cos(π × (t − 14) / 12)
-        T_max = T_mean + A
-        Solving for A given T_now at hour t gives T_max_inferred.
-        This is physically grounded (solar-radiation-driven diurnal cycle),
-        not linear extrapolation.
+      Step 1 — 2-state Kalman filter infers T_max from T_now:
+        State x = [T_mean, A], T_max = T_mean + A.
+        Observation: T_now = T_mean + A × cos(φ),  H = [1, cos(φ)].
+        Prior splits σ_prior² equally: Var(T_mean) = Var(A) = σ_prior²/2.
+        When cos(φ) ≈ 0 (near midnight), Kalman gain K → 0 — no singularity.
+        This replaces the algebraic A_obs = (T_now − T_mean)/cos(φ) that
+        explodes at small cos_phase (the old cosine-singularity bug).
 
-      Step 2 — Gaussian conjugate posterior:
-        Prior:      T_max ~ N(μ_forecast, σ_prior²)
-        Likelihood: T_max_inferred ~ N(T_max_inferred, σ_lik²)
-                    σ_lik = σ_prior / |cos φ| (larger away from peak)
-        Posterior:  N(μ_post, σ_post²) via standard precision-weighted formula
-        σ_post is used directly — NO additional time-decay on top of it.
+      Step 2 — posterior σ from Kalman covariance:
+        σ_post = sqrt(Var(T_mean_post) + 2·Cov + Var(A_post))
+        Used directly — NO additional time-decay.
 
       Step 3 — Truncated Normal given T_max ≥ T_now:
         P(lo ≤ T_max ≤ hi | T_max ≥ T_now)
@@ -266,7 +360,7 @@ def _temp_bucket_model_prob(
     """
     forecast_mu = weather.get("temp_max_c")
     if forecast_mu is None:
-        return None, False
+        return None, False, False
 
     lo_c = temp_bucket.get("lo_c")
     hi_c = temp_bucket.get("hi_c")
@@ -286,7 +380,7 @@ def _temp_bucket_model_prob(
     if obs_temp_c is None or time_remaining_hours is None:
         lo_cdf = _norm_cdf((lo_c - forecast_mu) / sigma_prior) if lo_c is not None else 0.0
         hi_cdf = _norm_cdf((hi_c - forecast_mu) / sigma_prior) if hi_c is not None else 1.0
-        return round(max(0.0, min(1.0, hi_cdf - lo_cdf)), 3), False
+        return round(max(0.0, min(1.0, hi_cdf - lo_cdf)), 3), False, False
 
     # ── Regime B: truncated normal + diurnal Bayes ────────────────────────────
     obs_adjusted = True
@@ -294,58 +388,45 @@ def _temp_bucket_model_prob(
 
     # Physical hard constraint: T_max already exceeded bucket ceiling → dead.
     if hi_c is not None and obs_temp_c > hi_c:
-        return 0.0, True
+        return 0.0, True, False
 
-    # ── Diurnal Bayesian μ update ─────────────────────────────────────────────
-    # Temperature follows a solar-radiation diurnal cycle:
-    #   T(t) = T_mean + A × cos(π × (t − T_PEAK) / 12)
-    # where t = hours since midnight, T_PEAK ≈ 14.0.
-    # Solving for amplitude A from T_now gives a physically-grounded T_max estimate.
-    #
-    # Gaussian conjugate prior/likelihood update:
-    #   Prior:      T_max ~ N(μ_f, σ_prior²)
-    #   Likelihood: T_max_inferred ~ N(t_max_inf, σ_lik²)
-    #   Posterior:  precision-weighted mean, σ_post = sqrt(1 / (prec_f + prec_lik))
-    #
-    # The posterior σ_post is used directly as sigma for the truncated normal.
-    # No additional time-decay factor — σ_prior already contains ensemble spread.
+    # ── 2-state Kalman filter μ update ───────────────────────────────────────
+    # State x = [T_mean, A], observation z = T_now = T_mean + A·cos(φ).
+    # This formulation eliminates the cosine-singularity (division by cos(φ))
+    # by treating it as a Kalman observation with potentially small gain.
+    # When cos(φ) ≈ 0 (midnight–6am), K → 0 → minimal state update.
+    # When cos(φ) ≈ 1 (peak), observation is maximally informative for A.
 
     T_PEAK_HOUR = 14.0
     phase     = math.pi * (hours_elapsed - T_PEAK_HOUR) / 12.0
     cos_phase = math.cos(phase)
 
     t_min_fc = weather.get("temp_min_c")
-    if t_min_fc is not None and hours_elapsed > 0 and abs(cos_phase) > 0.08:
-        T_mean_fc = (forecast_mu + t_min_fc) / 2.0
 
-        # Infer diurnal amplitude from T_now
-        A_obs = (obs_temp_c - T_mean_fc) / cos_phase
-        A_obs = max(0.0, A_obs)    # physical: amplitude must be non-negative
-        t_max_inferred = T_mean_fc + A_obs
+    if hours_elapsed > 0:
+        # Prior mean for [T_mean, A] from forecast
+        T_mean_fc = (forecast_mu + t_min_fc) / 2.0 if t_min_fc is not None else forecast_mu * 0.9
+        A_fc      = forecast_mu - T_mean_fc   # amplitude: T_max − T_mean
 
-        # Likelihood σ: how reliable is this diurnal inference?
-        # Smaller |cos_phase| → worse trigonometric sensitivity → larger σ_lik.
-        sigma_lik = max(0.6, sigma_prior / max(0.25, abs(cos_phase)))
+        # Split σ_prior² equally between T_mean and A variance (independent prior)
+        p_mm = sigma_prior ** 2 / 2.0
+        p_aa = sigma_prior ** 2 / 2.0
+        p_ma = 0.0
+        R    = 0.5 ** 2   # METAR/WU measurement noise: ±0.5°C
 
-        # Conjugate Gaussian posterior
-        prec_prior = 1.0 / (sigma_prior ** 2)
-        prec_lik   = 1.0 / (sigma_lik   ** 2)
-        sigma_post = math.sqrt(1.0 / (prec_prior + prec_lik))
-        mu_post    = (forecast_mu * prec_prior + t_max_inferred * prec_lik) / (prec_prior + prec_lik)
+        _, _, t_max_inferred, sigma_post, regime_shift = _kalman_diurnal_update(
+            T_mean_fc, A_fc, p_mm, p_aa, p_ma, obs_temp_c, cos_phase, R
+        )
+        mu    = t_max_inferred
+        sigma = sigma_post
 
-        mu    = mu_post
-        sigma = sigma_post   # posterior σ; NO further decay
-
-        print(f"[Comparator] Diurnal Bayes: fc={forecast_mu:.1f} T_now={obs_temp_c:.1f} "
-              f"cosφ={cos_phase:.2f} T_inf={t_max_inferred:.1f} "
-              f"→ μ={mu:.1f} σ={sigma:.2f}")
-    elif hours_elapsed < 0.5:
-        # Very early: obs carries minimal information; trust forecast
-        mu, sigma = forecast_mu, sigma_prior
+        print(f"[Comparator] Kalman: fc={forecast_mu:.1f} T_now={obs_temp_c:.1f} "
+              f"cosφ={cos_phase:.2f} → T_max_post={mu:.1f} σ={sigma:.2f}"
+              + (" ⚡REGIME" if regime_shift else ""))
     else:
-        # Near peak (cos_phase ≈ 0): obs is the best direct estimate of T_max
-        mu    = max(forecast_mu, obs_temp_c)
-        sigma = max(0.4, sigma_prior * 0.5)   # tight: at peak, T_max ≈ T_now
+        regime_shift = False
+        # t=0 (no elapsed time): pure forecast, no obs information yet
+        mu, sigma = forecast_mu, sigma_prior
 
     # Normalising constant: P(T_max >= T_now) in N(μ, σ)
     z_a    = (obs_temp_c - mu) / sigma
@@ -355,7 +436,7 @@ def _temp_bucket_model_prob(
         # Numerical edge: T_now >> μ.  All mass concentrated at T_now.
         in_lo = lo_c is None or obs_temp_c >= lo_c
         in_hi = hi_c is None or obs_temp_c <= hi_c
-        return (0.93 if (in_lo and in_hi) else 0.02), True
+        return (0.93 if (in_lo and in_hi) else 0.02), True, regime_shift
 
     # P(lo ≤ T_max ≤ hi | T_max ≥ T_now)
     eff_lo = max(lo_c, obs_temp_c) if lo_c is not None else obs_temp_c
@@ -368,7 +449,7 @@ def _temp_bucket_model_prob(
 
     p_in_range = p_hi - p_lo
     prob = p_in_range / p_above
-    return round(max(0.0, min(0.97, prob)), 3), True
+    return round(max(0.0, min(0.97, prob)), 3), True, regime_shift
 
 
 def _celsius_to_fahrenheit(c: float) -> float:
@@ -679,7 +760,7 @@ def compare_market(market: dict) -> Optional[dict]:
                 wu_definitive = True
                 wu_definitive_result = "dead"
 
-        model_prob, obs_adjusted = _temp_bucket_model_prob(
+        model_prob, obs_adjusted, regime_shift_flag = _temp_bucket_model_prob(
             weather, temp_bucket, days_ahead,
             obs_temp_c=effective_obs_c,
             time_remaining_hours=time_remaining_hours,
@@ -756,6 +837,7 @@ def compare_market(market: dict) -> Optional[dict]:
             except Exception:
                 pass
 
+        exec_edge_vwap = None
         if book and book.get("best_ask") and book.get("best_bid"):
             # True execution cost from real order book
             if raw_edge > 0:
@@ -763,6 +845,23 @@ def compare_market(market: dict) -> Optional[dict]:
             else:
                 exec_edge = book["best_bid"] - model_prob   # BUY NO: pay 1-ask_no = bid_yes
             half_spread = book["half_spread"]
+
+            # ── VWAP depth check: does a $20 order sweep above best_ask? ──────
+            # exec_edge = model_prob - best_ask assumes infinite top-of-book liquidity.
+            # A $20 Kelly bet may consume multiple levels, paying VWAP > best_ask.
+            # Conservative edge: use min(exec_edge_best_ask, exec_edge_vwap).
+            if raw_edge > 0:
+                asks_full = book.get("asks_full", [])
+                if asks_full:
+                    sweep = _sweep_book(asks_full, _VWAP_TEST_USD)
+                    vwap = sweep.get("vwap")
+                    if vwap is not None:
+                        exec_edge_vwap = model_prob - vwap
+                        if exec_edge_vwap < exec_edge:
+                            print(f"[VWAP] {token_id_yes[:10]}: best_ask={book['best_ask']:.3f} "
+                                  f"vwap@${_VWAP_TEST_USD:.0f}={vwap:.4f} "
+                                  f"edge_vwap={exec_edge_vwap:.4f} < edge_ask={exec_edge:.4f}")
+                            exec_edge = exec_edge_vwap  # pay the real depth cost
         else:
             # Fallback: estimated spread (clearly worse than real book)
             half_spread = _estimate_half_spread(market_price_yes, days_ahead)
@@ -798,7 +897,7 @@ def compare_market(market: dict) -> Optional[dict]:
                 "in_latency_arb_zone": in_latency_arb_zone,
                 "wu_definitive": wu_definitive,
             }
-        # is_opportunity: based on EXECUTABLE edge, not paper edge
+        # is_opportunity: based on EXECUTABLE edge (VWAP-adjusted), not paper edge
         is_opp = exec_edge > EDGE_THRESHOLD if raw_edge > 0 else (-exec_edge) > EDGE_THRESHOLD
         action = ("BUY YES" if raw_edge > 0 else "BUY NO") if is_opp else "HOLD"
 
@@ -819,7 +918,8 @@ def compare_market(market: dict) -> Optional[dict]:
             "weather_temp_max_f": fc_max_f,
             "edge": edge,
             "abs_edge": round(abs(raw_edge), 4),
-            "exec_edge": round(exec_edge, 4),   # what you actually capture after spread
+            "exec_edge": round(exec_edge, 4),   # VWAP-adjusted executable edge
+            "exec_edge_vwap": round(exec_edge_vwap, 4) if exec_edge_vwap is not None else None,
             "half_spread": round(half_spread, 4),
             "action": action,
             "is_opportunity": is_opp,
@@ -832,6 +932,7 @@ def compare_market(market: dict) -> Optional[dict]:
             "wu_definitive": wu_definitive,
             "wu_definitive_result": wu_definitive_result,
             "latency_note": latency_note,
+            "regime_shift": regime_shift_flag,   # Kalman 3σ innovation flag
         }
 
     # Calculate model probability (standard binary markets)
@@ -881,9 +982,20 @@ def compare_market(market: dict) -> Optional[dict]:
         except Exception:
             pass
 
+    exec_edge_vwap = None
     if book and book.get("best_ask") and book.get("best_bid"):
         exec_edge   = model_prob - book["best_ask"] if raw_edge > 0 else book["best_bid"] - model_prob
         half_spread = book["half_spread"]
+        # VWAP depth-impact check for BUY YES orders
+        if raw_edge > 0:
+            asks_full = book.get("asks_full", [])
+            if asks_full:
+                sweep = _sweep_book(asks_full, _VWAP_TEST_USD)
+                vwap = sweep.get("vwap")
+                if vwap is not None:
+                    exec_edge_vwap = model_prob - vwap
+                    if exec_edge_vwap < exec_edge:
+                        exec_edge = exec_edge_vwap
     else:
         half_spread = _estimate_half_spread(market_price_yes, days_ahead)
         exec_edge   = raw_edge - half_spread if raw_edge > 0 else raw_edge + half_spread
@@ -905,6 +1017,7 @@ def compare_market(market: dict) -> Optional[dict]:
         "edge": round(raw_edge, 4),
         "abs_edge": round(abs(raw_edge), 4),
         "exec_edge": round(exec_edge, 4),
+        "exec_edge_vwap": round(exec_edge_vwap, 4) if exec_edge_vwap is not None else None,
         "half_spread": round(half_spread, 4),
         "action": action,
         "is_opportunity": is_opportunity,

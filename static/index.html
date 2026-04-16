@@ -529,14 +529,18 @@ main { display: grid; grid-template-columns: 1fr 290px; gap: 24px; padding: 24px
   font-family: var(--mono);
 }
 
-/* ── Date Filter Bar ─────────────────────────────────────── */
-#date-filter-bar {
+/* ── Filter Bars ─────────────────────────────────────────── */
+#date-filter-bar,
+#region-filter-bar,
+#risk-filter-bar {
   display: flex;
   gap: 6px;
-  padding: 0 0 18px;
   flex-wrap: wrap;
   align-items: center;
 }
+#date-filter-bar   { padding: 0 0 8px; }
+#region-filter-bar { padding: 0 0 8px; min-height: 0; }
+#risk-filter-bar   { padding: 0 0 18px; }
 .date-tab {
   background: transparent;
   border: 1px solid var(--border);
@@ -553,6 +557,87 @@ main { display: grid; grid-template-columns: 1fr 290px; gap: 24px; padding: 24px
 .date-tab:hover { border-color: var(--border2); color: var(--text); }
 .date-tab.active { background: var(--blue); border-color: var(--blue); color: #fff; }
 .date-tab .tab-count { font-size: 9px; font-weight: 400; margin-left: 4px; opacity: .7; }
+
+/* Region filter tabs */
+.region-tab {
+  background: transparent; border: 1px solid var(--border); color: var(--dim2);
+  border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 10.5px; font-weight: 600;
+  font-family: var(--mono); transition: all .15s; white-space: nowrap;
+}
+.region-tab:hover { border-color: var(--border2); color: var(--text); }
+.region-tab.active-all    { background: var(--blue);              border-color: var(--blue);    color: #fff; }
+.region-tab.active-asia   { background: rgba(249,115,22,.15);     border-color: #f97316;        color: #f97316; }
+.region-tab.active-europe { background: rgba(91,142,240,.15);     border-color: var(--blue);    color: var(--blue); }
+.region-tab.active-na     { background: rgba(61,214,140,.15);     border-color: var(--green);   color: var(--green); }
+.region-tab.active-sa     { background: rgba(234,179,8,.15);      border-color: #eab308;        color: #eab308; }
+.region-tab.active-mea    { background: rgba(168,85,247,.15);     border-color: #a855f7;        color: #a855f7; }
+.region-tab.active-aus    { background: rgba(6,182,212,.15);      border-color: #06b6d4;        color: #06b6d4; }
+.region-tab .tab-count { font-size: 9px; font-weight: 400; margin-left: 4px; opacity: .7; }
+
+/* Risk filter tabs */
+.risk-tab {
+  background: transparent; border: 1px solid var(--border); color: var(--dim2);
+  border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 10.5px; font-weight: 600;
+  font-family: var(--mono); transition: all .15s; white-space: nowrap;
+}
+.risk-tab:hover { border-color: var(--border2); color: var(--text); }
+.risk-tab.active-all      { background: var(--blue);   border-color: var(--blue);   color: #fff; }
+.risk-tab.active-slippage { background: rgba(232,168,76,.15); border-color: var(--yellow); color: var(--yellow); }
+.risk-tab.active-regime   { background: rgba(240,64,96,.15);  border-color: var(--red);    color: var(--red); }
+.risk-tab.active-kelly    { background: rgba(91,142,240,.15); border-color: var(--blue);   color: var(--blue); }
+.risk-tab .tab-count { font-size: 9px; font-weight: 400; margin-left: 4px; opacity: .7; }
+
+/* ── Portfolio Kelly Group ───────────────────────────────── */
+.kelly-group-box {
+  border: 1px solid rgba(91,142,240,.35);
+  border-radius: 12px;
+  margin-bottom: 20px;
+  overflow: hidden;
+  background: rgba(91,142,240,.03);
+}
+.kelly-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: rgba(91,142,240,.07);
+  border-bottom: 1px solid rgba(91,142,240,.2);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.kelly-group-header .grp-label { color: var(--blue); }
+.kelly-group-header .grp-meta  { color: var(--dim2); font-weight: 400; }
+.kelly-group-header .grp-cap   { color: var(--yellow); font-weight: 700; }
+.kelly-group-box .card { border-radius: 0; margin-bottom: 0; border-left: none; border-right: none; border-top: none; }
+.kelly-group-box .card:last-child { border-bottom: none; }
+.kelly-group-box .card.opportunity { box-shadow: inset 3px 0 0 var(--blue); }
+
+/* ── Regime shift highlight ──────────────────────────────── */
+.card.regime-shift {
+  border-color: rgba(240,64,96,.35) !important;
+  box-shadow: inset 3px 0 0 var(--red) !important;
+}
+.card.regime-shift.opportunity {
+  border-color: rgba(240,64,96,.45) !important;
+}
+.regime-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  color: var(--red); background: rgba(240,64,96,.1);
+  border: 1px solid rgba(240,64,96,.35); border-radius: 4px; padding: 2px 8px;
+  animation: pulse-red 1.5s infinite;
+}
+
+/* ── VWAP slippage warning ───────────────────────────────── */
+.slippage-warn {
+  font-size: 10px; font-family: var(--mono); padding: 3px 8px;
+  border-radius: 4px; white-space: nowrap; flex-shrink: 0;
+  color: var(--yellow); border: 1px solid rgba(232,168,76,.4);
+  background: rgba(232,168,76,.08);
+}
 
 /* ── Forecast reason ─────────────────────────────────────── */
 .forecast-reason {
@@ -756,6 +841,10 @@ main { display: grid; grid-template-columns: 1fr 290px; gap: 24px; padding: 24px
     <div class="section-title">套利機會</div>
     <!-- Date filter tabs -->
     <div id="date-filter-bar"></div>
+    <!-- Region filter tabs -->
+    <div id="region-filter-bar"></div>
+    <!-- Risk filter tabs -->
+    <div id="risk-filter-bar"></div>
     <div id="opportunities-list"><div class="skeleton"></div><div class="skeleton"></div></div>
 
     <div id="no-edge-wrap" style="margin-top:16px">
@@ -893,12 +982,132 @@ main { display: grid; grid-template-columns: 1fr 290px; gap: 24px; padding: 24px
 </div>
 
 <script>
-// ── State ─────────────────────────────────────────────────
+// ── State (unidirectional — all render reads from here) ───
 let sectionState = { 'no-edge': true, 'skipped': false };
 let autoRefreshTimer = null;
 let _allOpportunities = [];
 let _allNoEdge = [];
-let _activeDate = 'all';
+
+// Single source of truth for active filters.
+// setFilter(key, val) updates this and triggers renderAll().
+const _state = {
+  dateFilter:   'all',   // 'all' | ISO date | 'soon-2h' | 'soon-6h' | 'soon-today'
+  regionFilter: 'all',   // 'all' | 'asia' | 'europe' | 'na' | 'sa' | 'mea' | 'aus'
+  riskFilter:   'all',   // 'all' | 'slippage' | 'regime' | 'high-kelly'
+};
+
+function setFilter(key, val) {
+  _state[key] = val;
+  renderAll();
+}
+
+// ── Risk filter predicates ─────────────────────────────────
+// Only EV-relevant signals: slippage depth impact, Kalman regime
+// shift (weather event), high Kelly (concentrated exposure).
+// No geography — money has no borders.
+const _VWAP_SLIPPAGE_MIN = 0.015;   // exec_edge drop ≥ 1.5¢ to flag
+const _HIGH_KELLY_MIN    = 5.0;
+
+function _matchesRisk(r, risk) {
+  if (risk === 'all') return true;
+  if (risk === 'slippage') {
+    const ev = r.exec_edge_vwap, ea = r.exec_edge ?? r.edge;
+    return ev != null && ea != null && (ea - ev) >= _VWAP_SLIPPAGE_MIN;
+  }
+  if (risk === 'regime') return r.regime_shift === true;
+  if (risk === 'high-kelly') return (r.kelly_bet || 0) >= _HIGH_KELLY_MIN;
+  return true;
+}
+
+// ── Region classification ──────────────────────────────────
+// City → region key lookup (lowercase city name → region)
+const _REGION_MAP = {
+  // 🌏 Asia
+  'tokyo':'asia','osaka':'asia','kyoto':'asia','nagoya':'asia',
+  'seoul':'asia','busan':'asia',
+  'beijing':'asia','shanghai':'asia','chengdu':'asia','guangzhou':'asia','shenzhen':'asia','wuhan':'asia','tianjin':'asia',
+  'hong kong':'asia','taipei':'asia','singapore':'asia',
+  'bangkok':'asia','ho chi minh':'asia','hanoi':'asia','manila':'asia',
+  'jakarta':'asia','kuala lumpur':'asia','yangon':'asia',
+  'mumbai':'asia','delhi':'asia','bangalore':'asia','kolkata':'asia','chennai':'asia','hyderabad':'asia',
+  'karachi':'asia','lahore':'asia','dhaka':'asia','colombo':'asia','kathmandu':'asia',
+  'ulaanbaatar':'asia','almaty':'asia','tashkent':'asia',
+  // 🌍 Europe
+  'london':'europe','manchester':'europe','birmingham':'europe','edinburgh':'europe','glasgow':'europe',
+  'paris':'europe','lyon':'europe','marseille':'europe',
+  'berlin':'europe','munich':'europe','frankfurt':'europe','hamburg':'europe','cologne':'europe','stuttgart':'europe','düsseldorf':'europe','dusseldorf':'europe',
+  'madrid':'europe','barcelona':'europe','valencia':'europe','seville':'europe',
+  'rome':'europe','milan':'europe','naples':'europe','turin':'europe',
+  'amsterdam':'europe','rotterdam':'europe','the hague':'europe',
+  'vienna':'europe','zurich':'europe','geneva':'europe','bern':'europe',
+  'stockholm':'europe','gothenburg':'europe','oslo':'europe','bergen':'europe',
+  'copenhagen':'europe','helsinki':'europe','tallinn':'europe','riga':'europe','vilnius':'europe',
+  'warsaw':'europe','krakow':'europe','prague':'europe','bratislava':'europe',
+  'budapest':'europe','bucharest':'europe','sofia':'europe',
+  'athens':'europe','thessaloniki':'europe','lisbon':'europe','porto':'europe',
+  'brussels':'europe','luxembourg':'europe','dublin':'europe',
+  'moscow':'europe','saint petersburg':'europe','st. petersburg':'europe',
+  'istanbul':'europe','ankara':'europe',
+  'kyiv':'europe','kiev':'europe','minsk':'europe','chisinau':'europe',
+  'belgrade':'europe','zagreb':'europe','sarajevo':'europe','ljubljana':'europe','skopje':'europe','tirana':'europe',
+  'reykjavik':'europe',
+  // 🌎 North America
+  'new york':'na','los angeles':'na','chicago':'na','houston':'na',
+  'phoenix':'na','philadelphia':'na','san antonio':'na','san diego':'na',
+  'dallas':'na','miami':'na','boston':'na','seattle':'na',
+  'denver':'na','atlanta':'na','las vegas':'na','minneapolis':'na',
+  'portland':'na','detroit':'na','nashville':'na','memphis':'na',
+  'baltimore':'na','washington':'na','charlotte':'na','louisville':'na',
+  'san francisco':'na','austin':'na','jacksonville':'na','columbus':'na','indianapolis':'na',
+  'toronto':'na','montreal':'na','vancouver':'na','calgary':'na','edmonton':'na','ottawa':'na',
+  'mexico city':'na','guadalajara':'na','monterrey':'na','puebla':'na','tijuana':'na',
+  'havana':'na','guatemala city':'na','san jose':'na','panama city':'na',
+  // 🌎 South America
+  'sao paulo':'sa','são paulo':'sa','rio de janeiro':'sa','brasilia':'sa','brasília':'sa',
+  'buenos aires':'sa','cordoba':'sa','córdoba':'sa','rosario':'sa','mendoza':'sa',
+  'lima':'sa','bogota':'sa','bogotá':'sa','medellin':'sa','medellín':'sa','cali':'sa',
+  'santiago':'sa','valparaiso':'sa','valparaíso':'sa',
+  'caracas':'sa','maracaibo':'sa',
+  'quito':'sa','guayaquil':'sa','la paz':'sa','santa cruz':'sa',
+  'montevideo':'sa','asuncion':'sa','asunción':'sa',
+  // 🌍 Middle East / Africa
+  'dubai':'mea','abu dhabi':'mea','sharjah':'mea','doha':'mea',
+  'riyadh':'mea','jeddah':'mea','mecca':'mea','medina':'mea',
+  'kuwait city':'mea','manama':'mea','muscat':'mea',
+  'tel aviv':'mea','jerusalem':'mea','amman':'mea','beirut':'mea','damascus':'mea','baghdad':'mea','tehran':'mea',
+  'cairo':'mea','alexandria':'mea','casablanca':'mea','rabat':'mea','tunis':'mea','algiers':'mea','tripoli':'mea',
+  'lagos':'mea','abuja':'mea','accra':'mea','dakar':'mea','abidjan':'mea',
+  'nairobi':'mea','addis ababa':'mea','dar es salaam':'mea','kampala':'mea','khartoum':'mea',
+  'johannesburg':'mea','cape town':'mea','durban':'mea','pretoria':'mea',
+  'kinshasa':'mea','luanda':'mea','maputo':'mea','harare':'mea','lusaka':'mea','antananarivo':'mea',
+  // 🌏 Australia / Oceania
+  'sydney':'aus','melbourne':'aus','brisbane':'aus','perth':'aus',
+  'adelaide':'aus','canberra':'aus','darwin':'aus','hobart':'aus',
+  'auckland':'aus','wellington':'aus','christchurch':'aus',
+  'port moresby':'aus','suva':'aus','noumea':'aus',
+};
+
+function _getRegionKey(r) {
+  // location_hint is the primary raw field; parsed.location is a fallback
+  const loc = (
+    r.location_hint ||
+    (r.parsed && r.parsed.location) ||
+    r.location || ''
+  ).toLowerCase().trim();
+  if (!loc) return null;
+  if (_REGION_MAP[loc]) return _REGION_MAP[loc];
+  // Partial match: loc contains a known city name (e.g. "New York, NY")
+  const keys = Object.keys(_REGION_MAP);
+  for (let i = 0; i < keys.length; i++) {
+    if (loc.includes(keys[i])) return _REGION_MAP[keys[i]];
+  }
+  return null;
+}
+
+function _matchesRegion(r, region) {
+  if (region === 'all') return true;
+  return _getRegionKey(r) === region;
+}
 
 // ── "Ending soon" filter helpers ───────────────────────────
 function _getEndMs(r) {
@@ -959,7 +1168,7 @@ function renderDateFilter(opps, noEdge) {
   const total  = opps.length + noEdge.length;
 
   function tab(filter, label, count, extra = '') {
-    const active = _activeDate === filter ? ' active' : '';
+    const active = _state.dateFilter === filter ? ' active' : '';
     const style  = extra ? ` style="${extra}"` : '';
     return `<button class="date-tab${active}"${style} onclick="applyDateFilter('${filter}')">${label} <span class="tab-count">${count}</span></button>`;
   }
@@ -987,10 +1196,70 @@ function renderDateFilter(opps, noEdge) {
   bar.innerHTML = html;
 }
 
-function _filterByActive(arr, dateStr) {
-  if (dateStr === 'all') return arr;
-  if (dateStr.startsWith('soon-')) return arr.filter(r => _matchSoonFilter(r, dateStr));
-  return arr.filter(r => _getCardDate(r) === dateStr);
+function _filterAll(arr, dateFilter, riskFilter, regionFilter) {
+  let out = arr;
+  // Date / time filter
+  if (dateFilter !== 'all') {
+    if (dateFilter.startsWith('soon-')) out = out.filter(r => _matchSoonFilter(r, dateFilter));
+    else out = out.filter(r => _getCardDate(r) === dateFilter);
+  }
+  // Region filter
+  if (regionFilter && regionFilter !== 'all') {
+    out = out.filter(r => _matchesRegion(r, regionFilter));
+  }
+  // Risk filter
+  if (riskFilter && riskFilter !== 'all') {
+    out = out.filter(r => _matchesRisk(r, riskFilter));
+  }
+  return out;
+}
+
+// ── Portfolio Kelly group renderer ─────────────────────────
+// Temperature bucket contracts for the same (city, date) are mutually
+// exclusive.  We render them inside a labeled group box so the trader
+// can see they share a portfolio cap — not independent exposures.
+function _renderWithPortfolioGroups(list, startRank) {
+  const groups  = {};   // groupKey → { city, date, totalRaw, cards[] }
+  const singles = [];   // non-grouped cards
+
+  list.forEach(r => {
+    if (r.kelly_portfolio_scaled) {
+      const city  = r.parsed?.location || r.location_hint || '';
+      const dateS = r.parsed?.target_date || _getCardDate(r);
+      const key   = city.toLowerCase() + '|' + dateS;
+      if (!groups[key]) groups[key] = { city, dateS, totalRaw: 0, cards: [] };
+      groups[key].cards.push(r);
+      groups[key].totalRaw = r.kelly_group_total_raw || groups[key].totalRaw;
+    } else {
+      singles.push(r);
+    }
+  });
+
+  let rank = startRank;
+  let html = '';
+
+  // Singles first (ranked)
+  singles.forEach(r => { html += buildCard(r, true, rank++); });
+
+  // Portfolio groups
+  Object.values(groups).forEach(g => {
+    const totalScaled = g.cards.reduce((s, r) => s + (r.kelly_bet || 0), 0);
+    const remaining   = Math.max(0, 10 - totalScaled);
+    const dateLabel   = _getDateLabel(g.dateS);
+    html += `<div class="kelly-group-box">
+      <div class="kelly-group-header">
+        <span class="grp-label">🔗 Portfolio 互斥組合 · ${g.city} · ${dateLabel}</span>
+        <span class="grp-meta">
+          原始 Kelly: <b>$${g.totalRaw.toFixed(2)}</b> →
+          縮比後合計: <span class="grp-cap">$${totalScaled.toFixed(2)}</span> /
+          上限 $10 · 剩餘額度: <b style="color:var(--green)">$${remaining.toFixed(2)}</b>
+        </span>
+      </div>
+      ${g.cards.map(r => buildCard(r, true, null)).join('')}
+    </div>`;
+  });
+
+  return html;
 }
 
 function _renderOppList(opps, isSoon) {
@@ -999,7 +1268,7 @@ function _renderOppList(opps, isSoon) {
   if (isSoon) list.sort((a, b) => (_getEndMs(a) ?? Infinity) - (_getEndMs(b) ?? Infinity));
   const active = list.filter(r => (_getEndMs(r) ?? Infinity) >= now);
   const ended  = list.filter(r => (_getEndMs(r) ?? Infinity) <  now);
-  let html = active.map((r, i) => buildCard(r, true, i + 1)).join('');
+  let html = _renderWithPortfolioGroups(active, 1);
   if (ended.length > 0) {
     html += `<div style="margin:16px 0 10px;padding:8px 12px;background:rgba(100,116,139,.08);border-radius:6px;border:1px solid var(--border);font-size:11px;color:var(--dim);font-weight:600;letter-spacing:.5px">
       ⊘ 以下市場已截止（僅供參考）
@@ -1050,14 +1319,28 @@ function _renderAllGrouped(opps, noEdge) {
   return html;
 }
 
-function applyDateFilter(dateStr) {
-  _activeDate = dateStr;
-  renderDateFilter(_allOpportunities, _allNoEdge);
+// kept for legacy onclick compatibility on rendered buttons
+function applyDateFilter(dateStr) { setFilter('dateFilter', dateStr); }
 
-  const filteredOpps   = _filterByActive(_allOpportunities, dateStr);
-  const filteredNoEdge = _filterByActive(_allNoEdge,        dateStr);
-  const isSoon         = dateStr.startsWith('soon-');
-  const isAll          = dateStr === 'all';
+// ── renderAll: single entry point for all state changes ───
+// Reads _state, re-renders filter bars and card lists.
+// No render function calls another render function.
+function renderAll() {
+  renderFilterBars();
+  renderCards();
+}
+
+function renderFilterBars() {
+  renderDateFilter(_allOpportunities, _allNoEdge);     // rebuilds date tabs
+  renderRegionFilter(_allOpportunities, _allNoEdge);   // rebuilds region tabs
+  renderRiskFilter(_allOpportunities, _allNoEdge);     // rebuilds risk tabs
+}
+
+function renderCards() {
+  const { dateFilter, regionFilter, riskFilter } = _state;
+  const filteredOpps   = _filterAll(_allOpportunities, dateFilter, riskFilter, regionFilter);
+  const filteredNoEdge = _filterAll(_allNoEdge,        dateFilter, riskFilter, regionFilter);
+  const isSoon = dateFilter.startsWith('soon-');
 
   // ── Opportunities ──
   const oppList = document.getElementById('opportunities-list');
@@ -1065,11 +1348,11 @@ function applyDateFilter(dateStr) {
     const noEdgeCount = filteredNoEdge.length;
     const hint = isSoon
       ? (noEdgeCount > 0 ? `有 ${noEdgeCount} 個市場即將結束但 Edge < 8%，往下查看 ↓` : '目前無即將結束的套利機會')
-      : (noEdgeCount > 0 ? `找到 ${noEdgeCount} 個市場，但 Edge < 8%，往下查看 ↓` : '此日期無可評估的市場');
+      : (noEdgeCount > 0 ? `找到 ${noEdgeCount} 個市場，但 Edge < 8%，往下查看 ↓` : '此篩選條件無可評估的市場');
     oppList.innerHTML = `<div class="empty"><div class="empty-icon">📊</div><div>無超過 8% Edge 的機會</div>
       <div style="margin-top:8px;font-size:12px;color:var(--yellow)">${hint}</div></div>`;
-  } else if (isAll) {
-    // "全部" view: group by date with visual date headers
+  } else if (dateFilter === 'all') {
+    // Group by date headers + portfolio groups within each date
     oppList.innerHTML = _renderAllGrouped(filteredOpps, filteredNoEdge);
   } else {
     const soonHeader = isSoon ? `<div class="soon-divider">⚡ 即將截止 — 按剩餘時間排序</div>` : '';
@@ -1081,7 +1364,81 @@ function applyDateFilter(dateStr) {
   if (isSoon) renderNoEdge.sort((a, b) => (_getEndMs(a) ?? Infinity) - (_getEndMs(b) ?? Infinity));
   document.getElementById('no-edge-count').textContent = renderNoEdge.length;
   document.getElementById('no-edge-list').innerHTML    = renderNoEdge.map(r => buildCard(r, false)).join('');
+}
 
+// ── Region filter bar renderer ─────────────────────────────
+const _REGION_CFG = [
+  { key: 'asia',   icon: '🌏', label: '亞洲',     color: '#f97316' },
+  { key: 'europe', icon: '🌍', label: '歐洲',     color: '#5b8ef0' },
+  { key: 'na',     icon: '🌎', label: '北美',     color: '#3dd68c' },
+  { key: 'sa',     icon: '🌎', label: '南美',     color: '#eab308' },
+  { key: 'mea',    icon: '🌍', label: '中東非洲', color: '#a855f7' },
+  { key: 'aus',    icon: '🌏', label: '澳洲',     color: '#06b6d4' },
+];
+
+function renderRegionFilter(opps, noEdge) {
+  try {
+    const bar = document.getElementById('region-filter-bar');
+    if (!bar) return;
+    const all = [].concat(opps || [], noEdge || []);
+    if (all.length === 0) { bar.innerHTML = ''; return; }
+
+    // Count cards per region
+    const counts = {};
+    _REGION_CFG.forEach(function(d) {
+      counts[d.key] = all.filter(function(r) { return _matchesRegion(r, d.key); }).length;
+    });
+    const totalAll = all.length;
+    const active   = _state.regionFilter;
+
+    const allCls = (active === 'all') ? 'active-all' : '';
+    var html = '<button class="region-tab ' + allCls + '" onclick="setFilter(\'regionFilter\',\'all\')">🌐 全部<span class="tab-count">' + totalAll + '</span></button>';
+
+    _REGION_CFG.forEach(function(d) {
+      const cnt = counts[d.key] || 0;
+      if (cnt === 0) return;
+      const isAct = (active === d.key);
+      const cls   = isAct ? ('active-' + d.key) : '';
+      html += '<button class="region-tab ' + cls + '" onclick="setFilter(\'regionFilter\',\'' + d.key + '\')" title="' + d.label + ' (' + cnt + ')">' +
+              d.icon + ' ' + d.label + '<span class="tab-count">' + cnt + '</span></button>';
+    });
+
+    bar.innerHTML = html;
+  } catch(e) {
+    console.error('[renderRegionFilter]', e);
+    const bar = document.getElementById('region-filter-bar');
+    if (bar) bar.innerHTML = '<span style="color:var(--red);font-size:11px">Region filter error: ' + e.message + '</span>';
+  }
+}
+
+// ── Risk filter bar renderer ───────────────────────────────
+function renderRiskFilter(opps, noEdge) {
+  const bar = document.getElementById('risk-filter-bar');
+  if (!bar) return;
+  const all = [...opps, ...noEdge];
+  if (all.length === 0) { bar.innerHTML = ''; return; }
+
+  const counts = {
+    slippage:   all.filter(r => _matchesRisk(r, 'slippage')).length,
+    regime:     all.filter(r => _matchesRisk(r, 'regime')).length,
+    'high-kelly': all.filter(r => _matchesRisk(r, 'high-kelly')).length,
+  };
+
+  const defs = [
+    { key: 'all',        label: '全部',        icon: '' },
+    { key: 'slippage',   label: '深度滑點',     icon: '⚠ ' },
+    { key: 'regime',     label: 'Kalman 重置',  icon: '⚡ ' },
+    { key: 'high-kelly', label: `≥$${_HIGH_KELLY_MIN} Kelly`, icon: '💰 ' },
+  ];
+
+  bar.innerHTML = defs
+    .filter(d => d.key === 'all' || counts[d.key] > 0)
+    .map(d => {
+      const cnt = d.key === 'all' ? all.length : counts[d.key];
+      const isAct = _state.riskFilter === d.key;
+      const cls = isAct ? `active-${d.key === 'high-kelly' ? 'kelly' : d.key}` : '';
+      return `<button class="risk-tab ${cls}" onclick="setFilter('riskFilter','${d.key}')">${d.icon}${d.label}<span class="tab-count">${cnt}</span></button>`;
+    }).join('');
 }
 
 // ── Weather Site Links (by city → official national met service) ──
@@ -1409,10 +1766,19 @@ function buildCard(r, isOpp, rank) {
   const spreadPct = Math.round(spread * 100);
   const spreadWidth = Math.min(spreadPct * 3, 100);
 
+  // Portfolio Kelly cap note — shown when backend scaled this card's Kelly
+  const kellyCapNote = r.kelly_portfolio_scaled
+    ? `<span style="font-size:10px;color:var(--yellow);font-family:var(--mono);margin-left:8px">
+        原始 $${(r.kelly_group_total_raw||0).toFixed(2)} → 組合上限 $10 縮比
+       </span>`
+    : '';
   const kellyLine = (isOpp && r.kelly_bet)
     ? `<div class="kelly-row">
-         <span class="kelly-label">建議注額 (Kelly × 共識)</span>
-         <span class="kelly-amount">$${r.kelly_bet.toFixed(2)}</span>
+         <span class="kelly-label">建議注額 (Kelly × 共識)${r.kelly_portfolio_scaled ? ' 🔗' : ''}</span>
+         <span style="display:flex;align-items:center;gap:0">
+           <span class="kelly-amount">$${r.kelly_bet.toFixed(2)}</span>
+           ${kellyCapNote}
+         </span>
        </div>`
     : '';
 
@@ -1427,11 +1793,18 @@ function buildCard(r, isOpp, rank) {
   const modDisplay = modYes != null ? pct(modYes) : '—';
   const modClass   = probClass(modYes);
 
-  const isMock   = r.source === 'mock';
+  const isMock       = r.source === 'mock';
   const isTempBucket = r.market_subtype === 'temperature_bucket';
+  const isRegime     = r.regime_shift === true;
   const linkAttr = r.url ? `href="${r.url}" target="_blank" rel="noopener"` : '';
   const tag      = r.url ? 'a' : 'div';
   const linkHint = r.url ? '↗ 前往投注' : (isMock ? '📊 Demo 數據' : '');
+
+  // VWAP depth slippage impact
+  const vwapDelta = (r.exec_edge_vwap != null && r.exec_edge != null)
+    ? (r.exec_edge - r.exec_edge_vwap)   // positive = VWAP worse than best_ask
+    : null;
+  const hasSlippage = vwapDelta != null && vwapDelta >= _VWAP_SLIPPAGE_MIN;
 
   // Top-5 badge
   const top5Icons = ['🥇','🥈','🥉','#4','#5'];
@@ -1627,12 +2000,14 @@ function buildCard(r, isOpp, rank) {
   const agreeFrac = cons.models_agree != null ? cons.models_agree / totalSources : null;
   const agreeClass = agreeFrac != null ? (agreeFrac >= 0.75 ? 'high' : agreeFrac >= 0.5 ? 'mid' : 'low') : '';
 
+  const regimeCls = isRegime ? ' regime-shift' : '';
   return `
-<${tag} class="card ${cardClass}" ${linkAttr}>
+<${tag} class="card ${cardClass}${regimeCls}" ${linkAttr}>
   ${top5Badge}
+  ${isRegime ? `<span class="regime-badge" style="position:absolute;top:${top5Badge?'26':'10'}px;left:10px">⚡ Kalman 突變重置</span>` : ''}
   ${linkHint ? `<span class="card-link-hint">${linkHint}</span>` : ''}
 
-  <div class="card-head"${top5Badge ? ' style="padding-top:26px"' : ''}>
+  <div class="card-head" style="${top5Badge || isRegime ? 'padding-top:26px' : ''}">
     <div class="card-header">
       <div class="card-question">${r.question || '—'}</div>
       <div class="edge-badge ${edgeClass}" title="紙面 Edge: ${edgeSign}${pct(edge)}${halfSpread != null ? ' | 半價差: ' + pct(halfSpread) : ''}">
@@ -1647,6 +2022,7 @@ function buildCard(r, isOpp, rank) {
       <span class="tag">📍 ${locationTag}</span>
       <span class="tag">📅 ${dateTag}</span>
       ${localTimeBadge}
+      ${hasSlippage ? `<span class="slippage-warn" title="$20 掃單 VWAP=${pct(r.exec_edge_vwap)} vs best_ask edge=${pct(r.exec_edge)}">⚠ 滑點 −${pct(vwapDelta)}</span>` : ''}
       ${stationBadge}
       ${isTempBucket ? '<span class="tag" style="color:var(--green);border-color:rgba(0,201,141,.35)">✓ Real</span>' : isMock ? '<span class="tag" style="color:var(--yellow)">Demo</span>' : ''}
       ${wxIconLink}
@@ -1861,11 +2237,11 @@ async function loadOpportunities(forceRefresh = false) {
     }
     _allOpportunities = (d.opportunities || []).slice().sort(_byEndTime);
     _allNoEdge        = (d.no_edge || []).slice().sort(_byEndTime);
-    // Preserve current date selection across auto-refreshes; only reset on manual refresh
-    if (forceRefresh) _activeDate = 'all';
+    // Preserve current filter state across auto-refreshes; only reset on manual refresh
+    if (forceRefresh) { _state.dateFilter = 'all'; _state.regionFilter = 'all'; _state.riskFilter = 'all'; }
 
-    // Render everything via applyDateFilter (preserves current tab selection)
-    applyDateFilter(_activeDate);
+    // Single renderAll() — reads _state, re-renders filter bars + cards
+    renderAll();
 
     // Keep no-edge section visible
     document.getElementById('no-edge-section').style.display = 'block';
@@ -1913,7 +2289,7 @@ async function refresh() {
 // ── Refresh "ending soon" tab counts every 30s ─────────────
 setInterval(() => {
   if (_allOpportunities.length > 0 || _allNoEdge.length > 0) {
-    renderDateFilter(_allOpportunities, _allNoEdge);
+    renderAll();   // unidirectional — rebuilds filter bars + cards from _state
   }
 }, 30000);
 

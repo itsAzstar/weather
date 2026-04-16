@@ -25,9 +25,12 @@ def fetch_clob_book(token_id: str) -> dict | None:
 
     Returns:
         {"best_bid": float, "best_ask": float,
-         "spread": float, "half_spread": float, "mid": float}
+         "spread": float, "half_spread": float, "mid": float,
+         "asks_full": list[{"price": float, "size": float}],  # sorted asc
+         "bids_full": list[{"price": float, "size": float}]}  # sorted desc
     or None if unavailable.
 
+    asks_full/bids_full are the full depth arrays required for sweep_book().
     Cached 2 minutes.  The spread from this function is authoritative —
     use it instead of any estimated spread formula.
     """
@@ -62,15 +65,22 @@ def fetch_clob_book(token_id: str) -> dict | None:
             result = None
         else:
             spread = best_ask - best_bid
+            # Normalise depth arrays to {price, size} dicts with floats
+            asks_full = [{"price": float(l.get("price", 0)),
+                          "size":  float(l.get("size",  0))} for l in asks]
+            bids_full = [{"price": float(l.get("price", 0)),
+                          "size":  float(l.get("size",  0))} for l in bids]
             result = {
                 "best_bid":    round(best_bid, 4),
                 "best_ask":    round(best_ask, 4),
                 "spread":      round(spread, 4),
                 "half_spread": round(spread / 2.0, 4),
                 "mid":         round((best_ask + best_bid) / 2.0, 4),
+                "asks_full":   asks_full,
+                "bids_full":   bids_full,
             }
             print(f"[CLOB Book] {token_id[:10]}: bid={best_bid:.3f} ask={best_ask:.3f} "
-                  f"spread={spread:.3f}")
+                  f"spread={spread:.3f} depth={len(asks_full)}A/{len(bids_full)}B")
 
         with _book_lock:
             _book_cache[token_id] = (result, now)
@@ -79,6 +89,62 @@ def fetch_clob_book(token_id: str) -> dict | None:
     except Exception as e:
         print(f"[CLOB Book] Error for {token_id}: {e}")
         return None
+
+
+def sweep_book(asks: list, budget_usd: float) -> dict:
+    """
+    Simulate sweeping the ask side of an order book with a given USD budget.
+
+    On Polymarket a YES contract costs `price` dollars and pays $1 if resolved YES.
+    Sweeping $budget_usd means spending that many dollars across consecutive ask
+    price levels to estimate the Volume-Weighted Average Price (VWAP) of execution.
+
+    Args:
+        asks:       ask levels sorted ascending by price, each {"price": float, "size": float}
+                    where size is number of contracts available at that price level.
+        budget_usd: total dollars to spend.
+
+    Returns:
+        {"vwap": float | None, "filled_usd": float, "levels_touched": int}
+
+    Returns vwap=None if asks is empty or no fill at all.
+    """
+    remaining = budget_usd
+    total_contracts = 0.0
+    total_cost = 0.0
+    levels_touched = 0
+
+    for level in asks:
+        price = float(level.get("price", 0))
+        size  = float(level.get("size",  0))
+        if price <= 0 or size <= 0:
+            continue
+
+        level_cost = price * size
+        if level_cost <= remaining:
+            # Consume entire level
+            total_contracts += size
+            total_cost      += level_cost
+            remaining       -= level_cost
+            levels_touched  += 1
+        else:
+            # Partial fill — exhaust remaining budget at this price
+            partial_contracts = remaining / price
+            total_contracts  += partial_contracts
+            total_cost       += remaining
+            levels_touched   += 1
+            remaining         = 0.0
+            break
+
+    if total_contracts <= 0:
+        return {"vwap": None, "filled_usd": 0.0, "levels_touched": 0}
+
+    vwap = total_cost / total_contracts
+    return {
+        "vwap":           round(vwap, 5),
+        "filled_usd":     round(total_cost, 4),
+        "levels_touched": levels_touched,
+    }
 
 WEATHER_KEYWORDS = [
     "rain", "rainfall", "precipitation", "weather",

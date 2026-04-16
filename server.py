@@ -167,6 +167,35 @@ def _run_scan() -> list[dict]:
     with ThreadPoolExecutor(max_workers=4) as executor:  # 8→4: consensus semaphore handles the rest
         enriched = list(executor.map(_enrich_one, results))
 
+    # ── Portfolio Kelly: cap total exposure for mutually exclusive buckets ───────
+    # Temperature buckets for the same (city, date) are mutually exclusive events
+    # (exactly one bucket resolves YES).  Sizing each independently with Kelly
+    # overstates total capital at risk by up to N× (one per bucket).
+    # Fix: group by (city, date), sum raw Kelly bets, scale proportionally if
+    # total exceeds the per-group cap.
+    MAX_GROUP_KELLY = 10.0   # max total $-exposure per (city, date) group
+    from collections import defaultdict as _defaultdict
+    bucket_groups: dict = _defaultdict(list)
+    for r in enriched:
+        if r.get("is_opportunity") and r.get("market_subtype") == "temperature_bucket":
+            parsed  = r.get("parsed", {})
+            city    = (parsed.get("location") or "").strip().lower()
+            date_s  = (parsed.get("target_date") or "")[:10]
+            if city and date_s:
+                bucket_groups[(city, date_s)].append(r)
+
+    for (city, date_s), group in bucket_groups.items():
+        total_kelly = sum(r.get("kelly_bet") or 0.0 for r in group)
+        if total_kelly > MAX_GROUP_KELLY and total_kelly > 0:
+            scale = MAX_GROUP_KELLY / total_kelly
+            for r in group:
+                raw_k = r.get("kelly_bet") or 0.0
+                r["kelly_bet"]             = round(raw_k * scale, 2)
+                r["kelly_portfolio_scaled"] = True
+                r["kelly_group_total_raw"]  = round(total_kelly, 2)
+            print(f"[Portfolio Kelly] {city} {date_s}: {len(group)} buckets "
+                  f"${total_kelly:.2f} → ${MAX_GROUP_KELLY:.2f} (scale={scale:.3f})")
+
     # ── Background: resolve any past markets (Polymarket API → archive fallback) ─
     # Run in a daemon thread so it doesn't block scan response
     import threading as _threading
@@ -249,10 +278,12 @@ def api_opportunities(refresh: bool = False):
                 elif isinstance(v, dict):
                     out[k] = {kk: vv for kk, vv in v.items()
                               if isinstance(vv, (str, int, float, bool, type(None)))}
-            # Ensure WU, latency arb, and spread fields are included
+            # Ensure WU, latency arb, spread, VWAP, and portfolio fields are included
             for extra_k in ("wu_temp_c", "wu_temp_f", "wu_age_min", "wu_source",
                             "wu_definitive", "wu_definitive_result", "latency_note",
-                            "in_latency_arb_zone", "exec_edge", "half_spread"):
+                            "in_latency_arb_zone", "exec_edge", "exec_edge_vwap",
+                            "half_spread", "kelly_portfolio_scaled", "kelly_group_total_raw",
+                            "regime_shift"):
                 if extra_k in r and extra_k not in out:
                     v = r[extra_k]
                     if isinstance(v, (str, int, float, bool, type(None))):
