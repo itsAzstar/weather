@@ -5,6 +5,7 @@ Returns None for non-US locations (NWS returns 404 outside CONUS/AK/HI).
 """
 
 import json as _json
+import ssl
 import threading
 import time
 import urllib.error
@@ -12,11 +13,15 @@ import urllib.request
 from datetime import date, datetime
 from typing import Optional
 
+_SSL_CTX = ssl.create_default_context()
+_SSL_CTX.check_hostname = False
+_SSL_CTX.verify_mode    = ssl.CERT_NONE
+
 
 def _urllib_get(url: str, headers: dict, timeout: int = 15) -> Optional[dict]:
     req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as resp:
             return _json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         if e.code == 404:

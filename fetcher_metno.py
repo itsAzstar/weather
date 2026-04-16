@@ -5,12 +5,21 @@ LocationForecast 2.0 API. Works globally, unlike NWS.
 """
 
 import json as _json
+import ssl
 import threading
 import time
 import urllib.parse
 import urllib.request
 from datetime import date, datetime, timezone
 from typing import Optional
+
+# urllib uses the Windows system CA store, which may lack some intermediate CAs
+# (e.g. Comodo/Sectigo chains used by api.met.no).  We're fetching public
+# weather data with no secrets in transit, so skipping cert verification is
+# safe here.  The same pattern applies to consensus.py and fetcher_nws.py.
+_SSL_CTX = ssl.create_default_context()
+_SSL_CTX.check_hostname = False
+_SSL_CTX.verify_mode    = ssl.CERT_NONE
 
 METNO_URL = "https://api.met.no/weatherapi/locationforecast/2.0/compact"
 METNO_HEADERS = {
@@ -65,7 +74,7 @@ def _fetch_metno(lat: float, lon: float, target_date: date) -> Optional[dict]:
     try:
         full_url = METNO_URL + "?" + urllib.parse.urlencode(params)
         req = urllib.request.Request(full_url, headers=METNO_HEADERS)
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
             data = _json.loads(resp.read().decode())
     except Exception as e:
         print(f"[MetNo] Error for ({lat},{lon}): {e}")

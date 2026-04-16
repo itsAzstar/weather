@@ -5,6 +5,7 @@ consensus.py
 """
 
 import json as _json
+import ssl
 import threading
 import time
 import urllib.error
@@ -13,6 +14,10 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 from typing import Optional
+
+_SSL_CTX = ssl.create_default_context()
+_SSL_CTX.check_hostname = False
+_SSL_CTX.verify_mode    = ssl.CERT_NONE
 
 from fetcher_nws   import get_nws_forecast
 from fetcher_metno import get_metno_forecast
@@ -50,7 +55,7 @@ def _safe_get(url: str, params: dict, timeout: int = 8) -> Optional[dict]:
     full_url = url + "?" + urllib.parse.urlencode(params) if params else url
     for attempt in range(2):
         try:
-            with urllib.request.urlopen(full_url, timeout=timeout) as resp:
+            with urllib.request.urlopen(full_url, timeout=timeout, context=_SSL_CTX) as resp:
                 return _json.loads(resp.read().decode())
         except Exception:
             if attempt == 1:
