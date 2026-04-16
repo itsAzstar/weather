@@ -4,9 +4,12 @@ consensus.py
 對每個市場取得五組預測，計算共識分數和 ensemble spread。
 """
 
-import requests
+import json as _json
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 from typing import Optional
@@ -43,12 +46,13 @@ COMMON_PARAMS = {
 
 
 def _safe_get(url: str, params: dict, timeout: int = 8) -> Optional[dict]:
+    # consensus.py runs inside asyncio.to_thread (sync context) so urllib is fine.
+    full_url = url + "?" + urllib.parse.urlencode(params) if params else url
     for attempt in range(2):
         try:
-            r = requests.get(url, params=params, timeout=timeout)
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
+            with urllib.request.urlopen(full_url, timeout=timeout) as resp:
+                return _json.loads(resp.read().decode())
+        except Exception:
             if attempt == 1:
                 return None
             time.sleep(0.5)

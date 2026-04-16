@@ -4,11 +4,26 @@ Fetches NWS (National Weather Service) daily forecasts for US locations.
 Returns None for non-US locations (NWS returns 404 outside CONUS/AK/HI).
 """
 
+import json as _json
 import threading
 import time
-import requests
+import urllib.error
+import urllib.request
 from datetime import date, datetime
 from typing import Optional
+
+
+def _urllib_get(url: str, headers: dict, timeout: int = 15) -> Optional[dict]:
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return _json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise  # let caller handle 404 specifically
+        return None
+    except Exception:
+        return None
 
 NWS_HEADERS = {"User-Agent": "WeatherArb/2.0 (contact@example.com)"}
 
@@ -68,18 +83,15 @@ def _fetch_nws(lat: float, lon: float, target_date: date) -> Optional[dict]:
     points_url = f"https://api.weather.gov/points/{lat:.4f},{lon:.4f}"
     print(f"[NWS] Points lookup: {points_url}")
     try:
-        r1 = requests.get(points_url, headers=NWS_HEADERS, timeout=15)
-        if r1.status_code == 404:
-            # Outside NWS coverage (international location)
-            print(f"[NWS] Location ({lat},{lon}) not in NWS coverage (404) — skipping")
+        points_data = _urllib_get(points_url, NWS_HEADERS, timeout=15)
+        if points_data is None:
+            print(f"[NWS] Location ({lat},{lon}) not in NWS coverage or request failed")
             return None
-        r1.raise_for_status()
-        points_data = r1.json()
-    except requests.exceptions.Timeout:
-        print(f"[NWS] Timeout on points lookup ({lat},{lon})")
-        return None
-    except requests.exceptions.HTTPError as e:
-        print(f"[NWS] HTTP error on points lookup: {e}")
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            print(f"[NWS] Location ({lat},{lon}) not in NWS coverage (404) — skipping")
+        else:
+            print(f"[NWS] HTTP error on points lookup: {e}")
         return None
     except Exception as e:
         print(f"[NWS] Error on points lookup: {e}")
@@ -93,12 +105,10 @@ def _fetch_nws(lat: float, lon: float, target_date: date) -> Optional[dict]:
     # Step 2: Daily forecast
     print(f"[NWS] Fetching forecast: {forecast_url}")
     try:
-        r2 = requests.get(forecast_url, headers=NWS_HEADERS, timeout=15)
-        r2.raise_for_status()
-        fc_data = r2.json()
-    except requests.exceptions.Timeout:
-        print(f"[NWS] Timeout on forecast fetch")
-        return None
+        fc_data = _urllib_get(forecast_url, NWS_HEADERS, timeout=15)
+        if fc_data is None:
+            print(f"[NWS] Failed to fetch forecast from {forecast_url}")
+            return None
     except Exception as e:
         print(f"[NWS] Error on forecast fetch: {e}")
         return None

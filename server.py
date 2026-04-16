@@ -48,8 +48,8 @@ async def _lifespan(app: FastAPI):
         await asyncio.sleep(30)
         while True:
             try:
-                init_db()
-                n = auto_resolve_past_markets()
+                await asyncio.to_thread(init_db)
+                n = await asyncio.to_thread(auto_resolve_past_markets)
                 if n:
                     print(f"[Scheduler] Auto-resolved {n} settled market(s)")
             except Exception as e:
@@ -380,31 +380,27 @@ def api_latency():
 
 
 @app.get("/api/history")
-def api_history(days: int = 30):
+async def api_history(days: int = 30):
     try:
-        init_db()
-        brier = get_brier_score(days=days)
-        recent = get_recent_predictions(limit=20)
-        return JSONResponse({
-            "brier_score": brier,
-            "recent":      recent,
-        })
+        await asyncio.to_thread(init_db)
+        brier  = await asyncio.to_thread(get_brier_score, days)
+        recent = await asyncio.to_thread(get_recent_predictions, 20)
+        return JSONResponse({"brier_score": brier, "recent": recent})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @app.get("/api/history/resolved")
-def api_history_resolved(days: int = 90):
+async def api_history_resolved(days: int = 90):
     try:
-        init_db()
-        # Try to auto-resolve any past markets using historical weather data
+        await asyncio.to_thread(init_db)
         try:
-            newly_resolved = auto_resolve_past_markets()
+            newly_resolved = await asyncio.to_thread(auto_resolve_past_markets)
             if newly_resolved:
                 print(f"[History] Auto-resolved {newly_resolved} past market(s)")
         except Exception:
             pass
-        data = get_all_predictions(days=days, limit=300)
+        data = await asyncio.to_thread(get_all_predictions, days, 300)
         return JSONResponse(data)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)

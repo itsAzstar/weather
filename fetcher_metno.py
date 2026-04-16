@@ -4,9 +4,11 @@ Fetches forecasts from the Norwegian Meteorological Institute (Met.no)
 LocationForecast 2.0 API. Works globally, unlike NWS.
 """
 
+import json as _json
 import threading
 import time
-import requests
+import urllib.parse
+import urllib.request
 from datetime import date, datetime, timezone
 from typing import Optional
 
@@ -61,15 +63,10 @@ def _fetch_metno(lat: float, lon: float, target_date: date) -> Optional[dict]:
     params = {"lat": round(lat, 4), "lon": round(lon, 4)}
     print(f"[MetNo] Fetching forecast for ({lat},{lon}) on {target_date} ...")
     try:
-        resp = requests.get(METNO_URL, params=params, headers=METNO_HEADERS, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-    except requests.exceptions.Timeout:
-        print(f"[MetNo] Timeout for ({lat},{lon})")
-        return None
-    except requests.exceptions.HTTPError as e:
-        print(f"[MetNo] HTTP error for ({lat},{lon}): {e}")
-        return None
+        full_url = METNO_URL + "?" + urllib.parse.urlencode(params)
+        req = urllib.request.Request(full_url, headers=METNO_HEADERS)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = _json.loads(resp.read().decode())
     except Exception as e:
         print(f"[MetNo] Error for ({lat},{lon}): {e}")
         return None
