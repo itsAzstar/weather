@@ -7,10 +7,78 @@ import re
 import requests
 import time
 import json
+import threading
 from datetime import datetime, timezone, date, timedelta
 
 CLOB_BASE = "https://clob.polymarket.com"
 GAMMA_BASE = "https://gamma-api.polymarket.com"
+
+# ── L2 order book cache ───────────────────────────────────────────────────────
+_book_cache: dict[str, tuple] = {}   # token_id → (result_or_None, timestamp)
+_book_lock  = threading.Lock()
+BOOK_CACHE_TTL = 2 * 60   # 2 minutes: order books are volatile
+
+
+def fetch_clob_book(token_id: str) -> dict | None:
+    """
+    Fetch the L2 order book for a YES token from Polymarket CLOB.
+
+    Returns:
+        {"best_bid": float, "best_ask": float,
+         "spread": float, "half_spread": float, "mid": float}
+    or None if unavailable.
+
+    Cached 2 minutes.  The spread from this function is authoritative —
+    use it instead of any estimated spread formula.
+    """
+    if not token_id:
+        return None
+
+    now = time.time()
+    with _book_lock:
+        entry = _book_cache.get(token_id)
+        if entry:
+            result, ts = entry
+            if now - ts < BOOK_CACHE_TTL:
+                return result
+
+    try:
+        data = _safe_get(f"{CLOB_BASE}/book", params={"token_id": token_id})
+        if not data:
+            with _book_lock:
+                _book_cache[token_id] = (None, now)
+            return None
+
+        # Sort bids descending, asks ascending — pick best levels
+        bids = sorted(data.get("bids", []),
+                      key=lambda x: float(x.get("price", 0)), reverse=True)
+        asks = sorted(data.get("asks", []),
+                      key=lambda x: float(x.get("price", 999)))
+
+        best_bid = float(bids[0]["price"]) if bids else None
+        best_ask = float(asks[0]["price"]) if asks else None
+
+        if best_bid is None or best_ask is None or best_ask <= best_bid:
+            result = None
+        else:
+            spread = best_ask - best_bid
+            result = {
+                "best_bid":    round(best_bid, 4),
+                "best_ask":    round(best_ask, 4),
+                "spread":      round(spread, 4),
+                "half_spread": round(spread / 2.0, 4),
+                "mid":         round((best_ask + best_bid) / 2.0, 4),
+            }
+            print(f"[CLOB Book] {token_id[:10]}: bid={best_bid:.3f} ask={best_ask:.3f} "
+                  f"spread={spread:.3f}")
+
+        with _book_lock:
+            _book_cache[token_id] = (result, now)
+        return result
+
+    except Exception as e:
+        print(f"[CLOB Book] Error for {token_id}: {e}")
+        return None
 
 WEATHER_KEYWORDS = [
     "rain", "rainfall", "precipitation", "weather",
@@ -327,22 +395,30 @@ def _parse_clob_market(raw: dict) -> dict | None:
     if not _is_weather_market(question + " " + desc):
         return None
 
-    # Try to get a market price from tokens
+    # Try to get a market price and token_id from tokens
     price_yes = None
     price_no = None
+    token_id_yes = None
+    token_id_no  = None
     tokens = raw.get("tokens", [])
     for token in tokens:
         outcome = (token.get("outcome") or "").lower()
         price = token.get("price")
-        if price is not None:
-            try:
-                p = float(price)
-            except (ValueError, TypeError):
-                continue
-            if outcome == "yes":
-                price_yes = p
-            elif outcome == "no":
-                price_no = p
+        tid   = token.get("token_id")
+        if outcome == "yes":
+            token_id_yes = tid
+            if price is not None:
+                try:
+                    price_yes = float(price)
+                except (ValueError, TypeError):
+                    pass
+        elif outcome == "no":
+            token_id_no = tid
+            if price is not None:
+                try:
+                    price_no = float(price)
+                except (ValueError, TypeError):
+                    pass
 
     if price_yes is None and price_no is not None:
         price_yes = 1.0 - price_no
@@ -352,15 +428,17 @@ def _parse_clob_market(raw: dict) -> dict | None:
     condition_id = raw.get("condition_id", raw.get("id", ""))
     slug = raw.get("market_slug", condition_id)
     return {
-        "question": question,
-        "condition_id": condition_id,
+        "question":        question,
+        "condition_id":    condition_id,
         "market_price_yes": price_yes,
-        "market_price_no": price_no,
-        "end_date": raw.get("end_date_iso") or raw.get("end_date"),
-        "description": desc,
-        "location_hint": None,
-        "url": f"https://polymarket.com/event/{slug}",
-        "source": "clob",
+        "market_price_no":  price_no,
+        "token_id_yes":    token_id_yes,
+        "token_id_no":     token_id_no,
+        "end_date":        raw.get("end_date_iso") or raw.get("end_date"),
+        "description":     desc,
+        "location_hint":   None,
+        "url":             f"https://polymarket.com/event/{slug}",
+        "source":          "clob",
     }
 
 

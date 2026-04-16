@@ -19,6 +19,7 @@ from fetcher_weather import (
 )
 from fetcher_stations import resolve_station, get_station_obs
 from fetcher_wu import get_wu_temp_cached
+from fetcher_polymarket import fetch_clob_book
 
 MAX_DAYS_AHEAD = 10       # Only consider markets resolving within this window
 EDGE_THRESHOLD = 0.08     # 8% minimum divergence to flag as opportunity (5% had too much noise)
@@ -237,27 +238,31 @@ def _temp_bucket_model_prob(
     """
     Compute P(T_max ∈ [lo_c, hi_c]) using the correct distribution given evidence.
 
-    Two regimes:
+    Regime A (no obs): T_max ~ N(μ_forecast, σ²)
+      σ = ensemble member std-dev if available; else lead-time heuristic.
 
-    A. No intraday obs: T_max ~ N(forecast_mu, sigma²)
-       sigma calibrated to Open-Meteo daily-max MAE (~1.2°C at d1, +0.5/day).
+    Regime B (obs available): Diurnal Bayesian update + Truncated Normal.
 
-    B. Obs available: T_max | T_max >= T_now ~ TruncatedNormal(mu, sigma, lower=T_now)
-       T_max is MONOTONICALLY INCREASING, so P(T_max < T_now) = 0 exactly.
-       The truncated distribution concentrates probability to the right of T_now.
+      Step 1 — diurnal cosine model infers T_max from T_now:
+        T(t) = T_mean + A × cos(π × (t − 14) / 12)
+        T_max = T_mean + A
+        Solving for A given T_now at hour t gives T_max_inferred.
+        This is physically grounded (solar-radiation-driven diurnal cycle),
+        not linear extrapolation.
 
-       Formula for P(lo ≤ T_max ≤ hi | T_max ≥ T_now):
-         eff_lo = max(lo_c, T_now)
-         Z      = 1 - Φ((T_now - mu) / sigma)   [normalising constant]
-         prob   = [Φ((hi - mu)/σ) - Φ((eff_lo - mu)/σ)] / Z
+      Step 2 — Gaussian conjugate posterior:
+        Prior:      T_max ~ N(μ_forecast, σ_prior²)
+        Likelihood: T_max_inferred ~ N(T_max_inferred, σ_lik²)
+                    σ_lik = σ_prior / |cos φ| (larger away from peak)
+        Posterior:  N(μ_post, σ_post²) via standard precision-weighted formula
+        σ_post is used directly — NO additional time-decay on top of it.
 
-       This correctly produces:
-         - P = 0 when T_now > hi_c (obs already exceeds ceiling — permanent)
-         - Probability shifts rightward as T_now rises within the bucket
-         - NO artificial boost toward certainty while time remains — tail risk
-           for temperature continuing to rise is always present until resolution
+      Step 3 — Truncated Normal given T_max ≥ T_now:
+        P(lo ≤ T_max ≤ hi | T_max ≥ T_now)
+          = [Φ((hi − μ)/σ) − Φ((eff_lo − μ)/σ)] / [1 − Φ((T_now − μ)/σ)]
+        eff_lo = max(lo_c, T_now).
 
-    sigma shrinks as the day progresses (less residual movement possible).
+      The ONLY hard certainty: T_now > hi_c → P(YES) = 0 (monotonic T_max).
     """
     forecast_mu = weather.get("temp_max_c")
     if forecast_mu is None:
@@ -266,75 +271,81 @@ def _temp_bucket_model_prob(
     lo_c = temp_bucket.get("lo_c")
     hi_c = temp_bucket.get("hi_c")
 
-    # ── σ: ensemble spread is ground truth; heuristic is fallback ─────────────
-    # Open-Meteo Ensemble API returns σ across member daily maxes.
-    # This reflects actual atmospheric uncertainty — non-linear, not heuristic.
-    # Only fall back to the lead-time heuristic when ensemble data is absent.
+    # ── σ_prior: ensemble member spread is ground truth ───────────────────────
+    # The ensemble σ already encodes all temporal uncertainty across members.
+    # Do NOT apply additional time-decay to it — that would double-count the
+    # information already captured by the ensemble spread narrowing near resolution.
     ensemble_spread = weather.get("temp_spread_c")
     if ensemble_spread is not None and ensemble_spread > 0.2:
-        sigma_base = float(ensemble_spread)
+        sigma_prior = float(ensemble_spread)
     else:
-        # Fallback heuristic: Open-Meteo daily-max MAE ~1.2°C at d1, +0.5°C/day
-        sigma_base = max(1.2, 1.2 + (days_ahead - 1) * 0.5)
+        # Fallback: Open-Meteo daily-max MAE ~1.2°C at d1, +0.5°C/day
+        sigma_prior = max(1.2, 1.2 + (days_ahead - 1) * 0.5)
 
     # ── Regime A: pure forecast, no obs ───────────────────────────────────────
     if obs_temp_c is None or time_remaining_hours is None:
-        lo_cdf = _norm_cdf((lo_c - forecast_mu) / sigma_base) if lo_c is not None else 0.0
-        hi_cdf = _norm_cdf((hi_c - forecast_mu) / sigma_base) if hi_c is not None else 1.0
+        lo_cdf = _norm_cdf((lo_c - forecast_mu) / sigma_prior) if lo_c is not None else 0.0
+        hi_cdf = _norm_cdf((hi_c - forecast_mu) / sigma_prior) if hi_c is not None else 1.0
         return round(max(0.0, min(1.0, hi_cdf - lo_cdf)), 3), False
 
-    # ── Regime B: truncated normal given T_now ────────────────────────────────
+    # ── Regime B: truncated normal + diurnal Bayes ────────────────────────────
     obs_adjusted = True
     hours_elapsed = max(0.0, 24.0 - time_remaining_hours)
-    day_progress  = min(1.0, hours_elapsed / 24.0)
 
     # Physical hard constraint: T_max already exceeded bucket ceiling → dead.
     if hi_c is not None and obs_temp_c > hi_c:
         return 0.0, True
 
-    # ── Bayesian μ update ─────────────────────────────────────────────────────
-    # When T_now > forecast_mu the NWP was wrong about today's atmospheric state
-    # (e.g. unexpected foehn, early cloud clearance).  Anchoring on the stale
-    # forecast μ makes the truncated distribution pathologically right-skewed.
+    # ── Diurnal Bayesian μ update ─────────────────────────────────────────────
+    # Temperature follows a solar-radiation diurnal cycle:
+    #   T(t) = T_mean + A × cos(π × (t − T_PEAK) / 12)
+    # where t = hours since midnight, T_PEAK ≈ 14.0.
+    # Solving for amplitude A from T_now gives a physically-grounded T_max estimate.
     #
-    # Fix: estimate μ_adjusted by projecting T_now forward along the observed
-    # warming slope to the expected daily peak (~14:00 local = hour 14).
-    # Then blend prior (forecast) and posterior (trajectory-projected) with
-    # weights that increase with both deviation magnitude and day progress.
-    if obs_temp_c > forecast_mu and hours_elapsed > 1.0:
-        t_min = weather.get("temp_min_c")
-        if t_min is None:
-            t_min = forecast_mu - 8.0   # typical diurnal range fallback
+    # Gaussian conjugate prior/likelihood update:
+    #   Prior:      T_max ~ N(μ_f, σ_prior²)
+    #   Likelihood: T_max_inferred ~ N(t_max_inf, σ_lik²)
+    #   Posterior:  precision-weighted mean, σ_post = sqrt(1 / (prec_f + prec_lik))
+    #
+    # The posterior σ_post is used directly as sigma for the truncated normal.
+    # No additional time-decay factor — σ_prior already contains ensemble spread.
 
-        # Observed warming slope from morning minimum to now
-        slope = (obs_temp_c - t_min) / hours_elapsed   # °C/hour
+    T_PEAK_HOUR = 14.0
+    phase     = math.pi * (hours_elapsed - T_PEAK_HOUR) / 12.0
+    cos_phase = math.cos(phase)
 
-        PEAK_HOUR = 14.0   # typical max temp ~14:00 local
-        if hours_elapsed < PEAK_HOUR:
-            hours_to_peak = PEAK_HOUR - hours_elapsed
-            # Slope dampens as peak approaches (~45% of slope for remaining hours)
-            t_projected = obs_temp_c + slope * hours_to_peak * 0.45
-        else:
-            # Post-peak: daily max is approximately T_now
-            t_projected = obs_temp_c
+    t_min_fc = weather.get("temp_min_c")
+    if t_min_fc is not None and hours_elapsed > 0 and abs(cos_phase) > 0.08:
+        T_mean_fc = (forecast_mu + t_min_fc) / 2.0
 
-        # Blend weights
-        # - deviation weight: large anomaly = strong evidence of structural shift
-        # - time weight: later in day = obs is more informative about final max
-        dev_weight  = min(0.5, (obs_temp_c - forecast_mu) / 4.0)
-        time_weight = min(0.5, day_progress)
-        blend = min(0.85, dev_weight + time_weight)
+        # Infer diurnal amplitude from T_now
+        A_obs = (obs_temp_c - T_mean_fc) / cos_phase
+        A_obs = max(0.0, A_obs)    # physical: amplitude must be non-negative
+        t_max_inferred = T_mean_fc + A_obs
 
-        mu = (1.0 - blend) * forecast_mu + blend * t_projected
-        print(f"[Comparator] Bayes μ: fc={forecast_mu:.1f} obs={obs_temp_c:.1f} "
-              f"proj={t_projected:.1f} blend={blend:.2f} → μ={mu:.1f}")
+        # Likelihood σ: how reliable is this diurnal inference?
+        # Smaller |cos_phase| → worse trigonometric sensitivity → larger σ_lik.
+        sigma_lik = max(0.6, sigma_prior / max(0.25, abs(cos_phase)))
+
+        # Conjugate Gaussian posterior
+        prec_prior = 1.0 / (sigma_prior ** 2)
+        prec_lik   = 1.0 / (sigma_lik   ** 2)
+        sigma_post = math.sqrt(1.0 / (prec_prior + prec_lik))
+        mu_post    = (forecast_mu * prec_prior + t_max_inferred * prec_lik) / (prec_prior + prec_lik)
+
+        mu    = mu_post
+        sigma = sigma_post   # posterior σ; NO further decay
+
+        print(f"[Comparator] Diurnal Bayes: fc={forecast_mu:.1f} T_now={obs_temp_c:.1f} "
+              f"cosφ={cos_phase:.2f} T_inf={t_max_inferred:.1f} "
+              f"→ μ={mu:.1f} σ={sigma:.2f}")
+    elif hours_elapsed < 0.5:
+        # Very early: obs carries minimal information; trust forecast
+        mu, sigma = forecast_mu, sigma_prior
     else:
-        mu = forecast_mu
-
-    # Residual sigma: ensemble spread × (1 - fraction of day that has solidified).
-    # The ensemble σ still reflects full-day uncertainty; shrink proportionally
-    # as T_now pins down the lower bound of T_max.
-    sigma = max(0.5, sigma_base * (1.0 - day_progress * 0.55))
+        # Near peak (cos_phase ≈ 0): obs is the best direct estimate of T_max
+        mu    = max(forecast_mu, obs_temp_c)
+        sigma = max(0.4, sigma_prior * 0.5)   # tight: at peak, T_max ≈ T_now
 
     # Normalising constant: P(T_max >= T_now) in N(μ, σ)
     z_a    = (obs_temp_c - mu) / sigma
@@ -733,17 +744,32 @@ def compare_market(market: dict) -> Optional[dict]:
             }
 
         # ── Spread-adjusted edge ───────────────────────────────────────────
-        # market_price_yes is the mid-price (or last trade).
-        # To BUY YES you pay ask = mid + half_spread.
-        # To BUY NO you pay ask_no = 1 - (mid - half_spread) = 1 - bid_yes.
-        # The EDGE_THRESHOLD gate must see executable edge, not paper edge.
-        half_spread = _estimate_half_spread(market_price_yes, days_ahead)
+        # Attempt to fetch real L2 bid/ask from CLOB.  Only pre-screened
+        # candidates (|raw_edge| > half the threshold) get a book fetch to
+        # limit API calls.  Fall back to estimated spread when unavailable.
         raw_edge    = model_prob - market_price_yes
-        # Executable edge deducts execution cost in the direction of the trade
-        if raw_edge > 0:
-            exec_edge = raw_edge - half_spread   # BUY YES: pay ask
+        token_id_yes = market.get("token_id_yes")
+        book = None
+        if token_id_yes and abs(raw_edge) > EDGE_THRESHOLD * 0.4:
+            try:
+                book = fetch_clob_book(token_id_yes)
+            except Exception:
+                pass
+
+        if book and book.get("best_ask") and book.get("best_bid"):
+            # True execution cost from real order book
+            if raw_edge > 0:
+                exec_edge = model_prob - book["best_ask"]   # BUY YES: pay ask
+            else:
+                exec_edge = book["best_bid"] - model_prob   # BUY NO: pay 1-ask_no = bid_yes
+            half_spread = book["half_spread"]
         else:
-            exec_edge = raw_edge + half_spread   # BUY NO: pay ask_no
+            # Fallback: estimated spread (clearly worse than real book)
+            half_spread = _estimate_half_spread(market_price_yes, days_ahead)
+            if raw_edge > 0:
+                exec_edge = raw_edge - half_spread
+            else:
+                exec_edge = raw_edge + half_spread
 
         edge     = round(raw_edge, 4)
         abs_edge = abs(exec_edge)
@@ -845,10 +871,22 @@ def compare_market(market: dict) -> Optional[dict]:
     except (ValueError, TypeError):
         return None
 
-    # ── Spread-adjusted edge ─────────────────────────────────────────────────
-    raw_edge    = model_prob - market_price_yes
-    half_spread = _estimate_half_spread(market_price_yes, days_ahead)
-    exec_edge   = raw_edge - half_spread if raw_edge > 0 else raw_edge + half_spread
+    # ── Spread-adjusted edge (real book preferred) ────────────────────────────
+    raw_edge     = model_prob - market_price_yes
+    token_id_yes = market.get("token_id_yes")
+    book = None
+    if token_id_yes and abs(raw_edge) > EDGE_THRESHOLD * 0.4:
+        try:
+            book = fetch_clob_book(token_id_yes)
+        except Exception:
+            pass
+
+    if book and book.get("best_ask") and book.get("best_bid"):
+        exec_edge   = model_prob - book["best_ask"] if raw_edge > 0 else book["best_bid"] - model_prob
+        half_spread = book["half_spread"]
+    else:
+        half_spread = _estimate_half_spread(market_price_yes, days_ahead)
+        exec_edge   = raw_edge - half_spread if raw_edge > 0 else raw_edge + half_spread
 
     is_opportunity = (exec_edge > EDGE_THRESHOLD if raw_edge > 0
                       else -exec_edge > EDGE_THRESHOLD)
