@@ -582,6 +582,7 @@ main { display: grid; grid-template-columns: 1fr 290px; gap: 24px; padding: 24px
 }
 .risk-tab:hover { border-color: var(--border2); color: var(--text); }
 .risk-tab.active-all      { background: var(--blue);   border-color: var(--blue);   color: #fff; }
+.risk-tab.active-opp      { background: rgba(61,214,140,.15); border-color: var(--green);  color: var(--green); }
 .risk-tab.active-slippage { background: rgba(232,168,76,.15); border-color: var(--yellow); color: var(--yellow); }
 .risk-tab.active-regime   { background: rgba(240,64,96,.15);  border-color: var(--red);    color: var(--red); }
 .risk-tab.active-kelly    { background: rgba(91,142,240,.15); border-color: var(--blue);   color: var(--blue); }
@@ -966,7 +967,7 @@ main { display: grid; grid-template-columns: 1fr 290px; gap: 24px; padding: 24px
         <div style="background:rgba(240,64,96,.07);border:1px solid rgba(240,64,96,.2);border-radius:6px;padding:8px 10px">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px">
             <div style="color:var(--red);font-weight:700">② ⚡ Kalman重置 = 最佳時機</div>
-            <button onclick="setFilter('riskFilter','regime');document.getElementById('opportunities-list').scrollIntoView({behavior:'smooth'})"
+            <button onclick="setFilter('riskFilter','opp');document.getElementById('opportunities-list').scrollIntoView({behavior:'smooth'})"
               style="font-size:10px;font-family:var(--mono);font-weight:700;padding:3px 9px;border-radius:5px;border:1px solid var(--red);background:rgba(240,64,96,.15);color:var(--red);cursor:pointer;white-space:nowrap;flex-shrink:0">
               篩選套利機會 ↑
             </button>
@@ -1082,6 +1083,7 @@ const _HIGH_KELLY_MIN    = 5.0;
 
 function _matchesRisk(r, risk) {
   if (risk === 'all') return true;
+  if (risk === 'opp') return r.is_opportunity === true;
   if (risk === 'slippage') {
     const ev = r.exec_edge_vwap, ea = r.exec_edge ?? r.edge;
     return ev != null && ea != null && (ea - ev) >= _VWAP_SLIPPAGE_MIN;
@@ -1491,15 +1493,17 @@ function renderRiskFilter(opps, noEdge) {
   if (all.length === 0) { bar.innerHTML = ''; return; }
 
   const counts = {
-    slippage:   all.filter(r => _matchesRisk(r, 'slippage')).length,
-    regime:     all.filter(r => _matchesRisk(r, 'regime')).length,
+    opp:          opps.length,
+    slippage:     all.filter(r => _matchesRisk(r, 'slippage')).length,
+    regime:       all.filter(r => _matchesRisk(r, 'regime')).length,
     'high-kelly': all.filter(r => _matchesRisk(r, 'high-kelly')).length,
   };
 
   const defs = [
     { key: 'all',        label: '全部',        icon: '' },
-    { key: 'slippage',   label: '深度滑點',     icon: '⚠ ' },
+    { key: 'opp',        label: '套利機會',     icon: '🎯 ' },
     { key: 'regime',     label: 'Kalman 重置',  icon: '⚡ ' },
+    { key: 'slippage',   label: '深度滑點',     icon: '⚠ ' },
     { key: 'high-kelly', label: `≥$${_HIGH_KELLY_MIN} Kelly`, icon: '💰 ' },
   ];
 
@@ -1508,7 +1512,8 @@ function renderRiskFilter(opps, noEdge) {
     .map(d => {
       const cnt = d.key === 'all' ? all.length : counts[d.key];
       const isAct = _state.riskFilter === d.key;
-      const cls = isAct ? `active-${d.key === 'high-kelly' ? 'kelly' : d.key}` : '';
+      const clsKey = d.key === 'high-kelly' ? 'kelly' : d.key;
+      const cls = isAct ? `active-${clsKey}` : '';
       return `<button class="risk-tab ${cls}" onclick="setFilter('riskFilter','${d.key}')">${d.icon}${d.label}<span class="tab-count">${cnt}</span></button>`;
     }).join('');
 }
