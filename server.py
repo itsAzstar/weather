@@ -268,6 +268,12 @@ async def _run_scan() -> list[dict]:
 
 # ── Routes ───────────────────────────────────────────────────────────────────
 
+@app.get("/health")
+def health():
+    """Lightweight health-check used by Railway.  Must return 200 fast."""
+    return JSONResponse({"status": "ok"})
+
+
 @app.get("/")
 def index():
     return FileResponse(str(STATIC_DIR / "index.html"))
@@ -421,6 +427,5 @@ if __name__ == "__main__":
     import sys, os
     sys.stdout.reconfigure(encoding="utf-8", errors="replace") if hasattr(sys.stdout, "reconfigure") else None
     port = int(os.environ.get("PORT", 8000))
-    print("Weather Arb Dashboard")
-    print(f"   http://localhost:{port}")
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
+    print(f"Weather Arb Dashboard — listening on 0.0.0.0:{port}")
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
