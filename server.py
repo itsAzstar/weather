@@ -133,9 +133,7 @@ async def _run_scan() -> list[dict]:
         rest       = [m for m in live if _end_day(m) not in (today_s, tomorrow, day2)]
 
         # Assemble: tomorrow first (best betting window), then today, day2, rest
-        # Cap at 80 — each market triggers weather + station + WU fetches.
-        # 80 markets ≈ 25 unique cities ≈ 25s scan on Railway (was 200 → 90s+).
-        live = (tomorrow_m + today_m + day2_m + rest)[:80]
+        live = (tomorrow_m + today_m + day2_m + rest)[:400]
         markets = live
         print(f"[Scan] Pre-filtered to {len(markets)} competitive live markets")
     else:

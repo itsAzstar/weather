@@ -744,10 +744,24 @@ async def compare_market(market: dict) -> Optional[dict]:
     except (ValueError, TypeError):
         return None
 
-    # Compute today fresh each call (avoid stale module-level date if server runs overnight)
-    today = date.today()
-    # Skip markets too far in the future or already past
-    days_ahead = (target_date - today).days
+    # ── Local-date expiry check (timezone-aware) ─────────────────────────────
+    # date.today() returns UTC date on Railway.  A NYC market ending April 16
+    # is still live at UTC April 17 01:00 (= NYC April 16 21:00 EDT).
+    # Fix: recalculate days_ahead using the city's local date so western
+    # markets aren't prematurely skipped when viewed from Asia/UTC.
+    now_utc = datetime.now(timezone.utc)
+    today_utc = now_utc.date()
+    days_ahead = (target_date - today_utc).days
+
+    if days_ahead < 0:
+        # UTC says expired — double-check with city's local calendar.
+        # e.g. NYC (UTC-4): still April 16 until 04:00 UTC April 17.
+        local_offset = _get_utc_offset(location, 0.0, dt=now_utc)
+        local_date = (now_utc + timedelta(hours=local_offset)).date()
+        days_ahead = (target_date - local_date).days
+
+    today = today_utc   # keep for downstream compatibility
+
     if days_ahead < 0:
         return {
             **market,
@@ -756,7 +770,7 @@ async def compare_market(market: dict) -> Optional[dict]:
             "edge": None,
             "action": "SKIP (past)",
             "is_opportunity": False,
-            "skip_reason": f"Market resolved {abs(days_ahead)} day(s) ago",
+            "skip_reason": f"Market resolved (local date past)",
             "days_ahead": days_ahead,
         }
     if days_ahead > MAX_DAYS_AHEAD:
