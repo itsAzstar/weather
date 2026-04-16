@@ -920,16 +920,82 @@ main { display: grid; grid-template-columns: 1fr 290px; gap: 24px; padding: 24px
       </div>
     </div>
 
+    <!-- 用語解說 -->
+    <div class="widget">
+      <div class="widget-title">📖 用語解說</div>
+      <div style="font-size:12px;color:var(--dim);line-height:1.7;display:flex;flex-direction:column;gap:10px">
+
+        <div>
+          <div style="color:var(--text);font-weight:700;margin-bottom:2px">⚡ Kalman 突變重置</div>
+          <div>氣象異常信號。當目前實測氣溫與模型預測相差超過 3 個標準差，代表剛剛發生了冷鋒過境、雷陣雨或其他非線性天氣事件。系統會拋棄舊有校準、完全信任最新觀測值重新估算。這類市場最值得優先關注 — 市場很可能還沒反應到最新氣象數據。</div>
+        </div>
+
+        <div>
+          <div style="color:var(--text);font-weight:700;margin-bottom:2px">⚠ 深度滑點</div>
+          <div>流動性不足警告。系統模擬以 $20 在訂單簿吃單，若實際成交均價（VWAP）比最佳賣價高出 1.5% 以上，代表訂單簿太薄、進場成本比表面高。Edge 看起來大但扣掉滑點後可能不划算。</div>
+        </div>
+
+        <div>
+          <div style="color:var(--text);font-weight:700;margin-bottom:2px">exec_edge（執行後 Edge）</div>
+          <div>真實可拿到的 Edge，已扣除訂單簿深度成本。= min(最佳賣價 Edge, VWAP Edge)。比 Edge% 更保守、更貼近實際下單結果。</div>
+        </div>
+
+        <div>
+          <div style="color:var(--text);font-weight:700;margin-bottom:2px">🔗 Portfolio 互斥組合</div>
+          <div>同一城市、同一天的多個溫度區間（如 NYC 60-65°F、65-70°F）只有一個能結算 YES — 屬於互斥事件。系統會將這組合的 Kelly 注額總上限限制在 $10，避免過度集中在同一個結果。</div>
+        </div>
+
+        <div>
+          <div style="color:var(--text);font-weight:700;margin-bottom:2px">Brier Score</div>
+          <div>預測校準分數（0–1，越低越好）。0.25 = 無資訊基準（等同隨機猜），&lt;0.2 = 良好，&lt;0.15 = 優秀。反映模型概率的長期準確度。</div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- 投資建議 -->
+    <div class="widget">
+      <div class="widget-title">💡 如何使用這份數據下注</div>
+      <div style="font-size:12px;color:var(--dim);line-height:1.7;display:flex;flex-direction:column;gap:8px">
+
+        <div style="background:rgba(61,214,140,.07);border:1px solid rgba(61,214,140,.2);border-radius:6px;padding:8px 10px">
+          <div style="color:var(--green);font-weight:700;margin-bottom:3px">① 優先看 exec_edge，不是 Edge%</div>
+          <div>Edge% 是理論值，exec_edge 才是扣完訂單深度後你真正能拿到的。建議只考慮 exec_edge ≥ 10% 的機會。</div>
+        </div>
+
+        <div style="background:rgba(240,64,96,.07);border:1px solid rgba(240,64,96,.2);border-radius:6px;padding:8px 10px">
+          <div style="color:var(--red);font-weight:700;margin-bottom:3px">② ⚡ Kalman重置 = 最佳時機</div>
+          <div>模型剛吃到最新觀測、市場還沒跟上。這是資訊不對稱最大的時刻。搭配高 exec_edge 和 2h內截止 → 強烈訊號。</div>
+        </div>
+
+        <div style="background:rgba(232,168,76,.07);border:1px solid rgba(232,168,76,.2);border-radius:6px;padding:8px 10px">
+          <div style="color:var(--yellow);font-weight:700;margin-bottom:3px">③ ⚠ 深度滑點 = 小心進場</div>
+          <div>訂單薄、成交成本高。若有滑點警告，建議縮減注額，或只在截止前 1h 才進（最後價格更有效率）。</div>
+        </div>
+
+        <div style="background:rgba(91,142,240,.07);border:1px solid rgba(91,142,240,.2);border-radius:6px;padding:8px 10px">
+          <div style="color:var(--blue);font-weight:700;margin-bottom:3px">④ 共識 = 幾個模型同意？</div>
+          <div>GFS + ECMWF + ICON 三個天氣模型全部同方向（共識「強」）才是真訊號。只有一個模型支持時風險顯著升高，注額應砍半。</div>
+        </div>
+
+        <div style="background:rgba(168,85,247,.07);border:1px solid rgba(168,85,247,.2);border-radius:6px;padding:8px 10px">
+          <div style="color:#a855f7;font-weight:700;margin-bottom:3px">⑤ Kelly 注額 = 最多下這麼多</div>
+          <div>Kelly 是上限，不是建議滿注。建議用 1/4 Kelly（Kelly÷4）作為實際下注，長期可大幅降低爆倉風險。互斥組合總注額系統已幫你限制在 $10。</div>
+        </div>
+
+      </div>
+    </div>
+
   </div>
 </main>
 
 <!-- ── History Section (full-width below main) ── -->
 <div style="padding: 0 24px 40px">
   <button class="section-toggle" onclick="toggleHistory()" id="history-toggle-btn">
-    <span id="history-arrow">▸</span> 預判歷史紀錄 — 正確 / 失敗 / 待結算
+    <span id="history-arrow">▾</span> 預判歷史紀錄 — 正確 / 失敗 / 待結算
     <span id="history-badge-counts" style="float:right;font-weight:400;color:var(--dim)"></span>
   </button>
-  <div id="history-panel" style="display:none">
+  <div id="history-panel" style="display:block">
 
     <!-- Stats strip -->
     <div class="history-rate-strip" id="history-rate-strip">
@@ -2088,6 +2154,11 @@ function toggleHistory() {
   if (open && !historyLoaded) loadHistoryResolved();
 }
 
+// Auto-load history since panel starts open
+function _initHistory() {
+  if (!historyLoaded) loadHistoryResolved();
+}
+
 function buildHistoryRow(r) {
   const edge      = r.edge;
   const edgeSign  = edge != null ? (edge >= 0 ? '+' : '') : '';
@@ -2311,6 +2382,7 @@ function scheduleAutoRefresh() {
     loadLatency(),
     loadHistory(),
   ]);
+  _initHistory();   // load history records (panel open by default)
   scheduleAutoRefresh();
 })();
 </script>
