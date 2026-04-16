@@ -5,10 +5,10 @@ Flags opportunities where the divergence exceeds the threshold (default 5%).
 Also fetches station observations and applies obs-adjustment for intraday markets.
 """
 
+import asyncio
 import calendar
 import math
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timezone, timedelta
 from typing import Optional
 
@@ -214,86 +214,57 @@ def _kalman_state_reset(key: tuple) -> None:
 # None and skipping every market.
 import time as _time
 
-_weather_cache: dict = {}          # key → (result_or_future, timestamp_or_None)
-_weather_cache_lock = threading.Lock()
-WEATHER_CACHE_TTL   = 2 * 60 * 60   # 2 hours — weather doesn't change minute-to-minute
-WEATHER_STALE_TTL   = 6 * 60 * 60   # 6 hours — stale-while-revalidate grace window
+_weather_cache: dict = {}       # key → (result, timestamp)
+_weather_inflight: dict = {}    # key → asyncio.Event (stampede prevention)
+WEATHER_CACHE_TTL = 2 * 60 * 60
+WEATHER_STALE_TTL = 6 * 60 * 60
 
 
-def _get_weather_cached(location: str, target_date: date) -> Optional[dict]:
-    """Fetch weather with cross-run cache (2-h TTL) and per-run deduplication.
-    Stale-while-revalidate: returns last-known-good if refetch fails and cache
-    is younger than WEATHER_STALE_TTL (6 h), rather than dropping the market."""
-    import concurrent.futures as cf
+async def _get_weather_cached(location: str, target_date: date) -> Optional[dict]:
     key = (location.lower(), target_date.isoformat())
     now = _time.time()
 
-    with _weather_cache_lock:
-        entry = _weather_cache.get(key)
-        if entry is not None:
-            val, ts = entry
-            if ts is None:
-                # In-flight Future — wait for it
-                is_first = False
-                fut = val
-                stale_val = None
-            elif now - ts < WEATHER_CACHE_TTL:
-                # Valid cached result
-                return val
-            else:
-                # Stale — re-fetch, but keep val as fallback
-                stale_val = val
-                fut = cf.Future()
-                _weather_cache[key] = (fut, None)
-                is_first = True
-        else:
-            stale_val = None
-            fut = cf.Future()
-            _weather_cache[key] = (fut, None)
-            is_first = True
-
-    if is_first:
-        try:
-            result = get_weather_for_location_date(location, target_date)
-        except Exception as e:
-            result = None
-            print(f"[Weather] Exception fetching {location} {target_date}: {e}")
-
-        if result is not None:
-            # Success — cache for the full TTL
-            with _weather_cache_lock:
-                _weather_cache[key] = (result, _time.time())
-            fut.set_result(result)
+    entry = _weather_cache.get(key)
+    stale_val = None
+    if entry is not None:
+        result, ts = entry
+        if now - ts < WEATHER_CACHE_TTL:
             return result
-        else:
-            # Failed fetch — do NOT cache None (allow retry on next scan)
-            # Stale-while-revalidate: serve last-known-good if available
-            with _weather_cache_lock:
-                if stale_val is not None:
-                    # Restore stale entry; mark as expired so next scan retries
-                    _weather_cache[key] = (stale_val, now - WEATHER_CACHE_TTL)
-                    print(f"[Weather] Fetch failed for {location} {target_date} — serving stale data")
-                    fut.set_result(stale_val)
-                    return stale_val
-                else:
-                    _weather_cache.pop(key, None)
-            fut.set_result(None)
-            return None
+        stale_val = result
 
+    event = _weather_inflight.get(key)
+    if event is not None:
+        await event.wait()
+        entry = _weather_cache.get(key)
+        return entry[0] if entry else stale_val
+
+    event = asyncio.Event()
+    _weather_inflight[key] = event
     try:
-        return fut.result(timeout=30)
-    except Exception:
-        return None
+        result = await get_weather_for_location_date(location, target_date)
+    except Exception as e:
+        print(f"[Weather] Exception fetching {location} {target_date}: {e}")
+        result = None
+    finally:
+        _weather_inflight.pop(key, None)
+        event.set()
+
+    if result is not None:
+        _weather_cache[key] = (result, _time.time())
+        return result
+    elif stale_val is not None:
+        _weather_cache[key] = (stale_val, now - WEATHER_CACHE_TTL)
+        print(f"[Weather] Fetch failed for {location} {target_date} — serving stale")
+        return stale_val
+    return None
 
 
 def clear_weather_cache():
-    """Evict only stale entries (keep fresh ones for next scan)."""
     now = _time.time()
-    with _weather_cache_lock:
-        stale = [k for k, (v, ts) in _weather_cache.items()
-                 if ts is None or (now - ts) >= WEATHER_CACHE_TTL]
-        for k in stale:
-            del _weather_cache[k]
+    stale = [k for k, (v, ts) in list(_weather_cache.items())
+             if now - ts >= WEATHER_CACHE_TTL]
+    for k in stale:
+        _weather_cache.pop(k, None)
 
 
 # ── Normal distribution helpers ───────────────────────────────────────────────
@@ -687,7 +658,7 @@ def _calculate_model_probability(
         return None
 
 
-def _get_station_data(location: str, weather: Optional[dict], target_date: Optional[date] = None) -> dict:
+async def _get_station_data(location: str, weather: Optional[dict], target_date: Optional[date] = None) -> dict:
     """
     Resolve ICAO station for a location and fetch current obs + WU daily high.
 
@@ -714,7 +685,7 @@ def _get_station_data(location: str, weather: Optional[dict], target_date: Optio
         result["station_icao"] = icao
 
         # ── METAR / NWS obs (current temperature, intraday tracking) ─────────
-        obs = get_station_obs(icao)
+        obs = await get_station_obs(icao)
         if obs:
             t_c = obs.get("temp_c")
             result["station_name"] = obs.get("station_name") or icao
@@ -729,7 +700,7 @@ def _get_station_data(location: str, weather: Optional[dict], target_date: Optio
         # dates, but will have today's running high immediately.
         if target_date is not None:
             try:
-                wu = get_wu_temp_cached(icao, target_date)
+                wu = await get_wu_temp_cached(icao, target_date)
                 if wu:
                     result["wu_temp_c"]  = wu.get("wu_temp_c")
                     result["wu_temp_f"]  = wu.get("wu_temp_f")
@@ -743,7 +714,7 @@ def _get_station_data(location: str, weather: Optional[dict], target_date: Optio
     return result
 
 
-def compare_market(market: dict) -> Optional[dict]:
+async def compare_market(market: dict) -> Optional[dict]:
     """
     Evaluate a single parsed Polymarket market against weather model data.
 
@@ -800,7 +771,7 @@ def compare_market(market: dict) -> Optional[dict]:
         }
 
     # Fetch weather (cached per location+date to avoid duplicate API calls)
-    weather = _get_weather_cached(location, target_date)
+    weather = await _get_weather_cached(location, target_date)
     _ = today  # suppress unused warning
     if weather is None:
         return {
@@ -820,7 +791,7 @@ def compare_market(market: dict) -> Optional[dict]:
     obs_adjusted = False
 
     if days_ahead <= 1:  # Only fetch obs for today/tomorrow markets
-        station_data = _get_station_data(location, weather, target_date=target_date)
+        station_data = await _get_station_data(location, weather, target_date=target_date)
         # Compute lon for time-remaining calculation
         lon = weather.get("lon") or 0.0
         time_remaining_hours = _time_remaining_hours(location, lon, target_date)
@@ -1151,29 +1122,31 @@ def compare_market(market: dict) -> Optional[dict]:
     }
 
 
-def compare_all_markets(markets: list[dict]) -> list[dict]:
+async def compare_all_markets(markets: list[dict]) -> list[dict]:
     """
-    Run comparisons for all markets in parallel and return sorted results.
+    Run comparisons for all markets concurrently using asyncio.gather.
+    True async I/O — no thread pool, no blocking, no GIL contention.
     Opportunities are sorted by abs_edge descending.
     Non-opportunities follow.
     """
-    clear_weather_cache()   # fresh cache per scan run
+    clear_weather_cache()   # evict stale entries before a fresh scan run
     results = []
     skipped = 0
 
-    # Parallel weather fetches — 8 workers; cache deduplicates same city+date
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        future_to_market = {executor.submit(compare_market, m): m for m in markets}
-        for future in as_completed(future_to_market):
-            try:
-                result = future.result()
-            except Exception:
-                skipped += 1
-                continue
-            if result is None:
-                skipped += 1
-                continue
-            results.append(result)
+    # asyncio.gather fires all compare_market coroutines concurrently.
+    # return_exceptions=True ensures one failure doesn't cancel the rest.
+    raw = await asyncio.gather(
+        *[compare_market(m) for m in markets],
+        return_exceptions=True,
+    )
+    for r in raw:
+        if isinstance(r, Exception):
+            print(f"[Comparator] Market error: {r}")
+            skipped += 1
+        elif r is None:
+            skipped += 1
+        else:
+            results.append(r)
 
     print(f"\n[Comparator] Evaluated {len(results)} markets, skipped {skipped} (no location/date/price)")
 

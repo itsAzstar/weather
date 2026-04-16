@@ -13,19 +13,19 @@ The page embeds a Next.js __NEXT_DATA__ script tag with the full
 observation data as JSON — no API key required.
 """
 
+import asyncio
 import json
 import re
-import threading
 import time
 from datetime import date, datetime, timezone
 from typing import Optional
 
-import requests
+from _http import get_session
 
 # ── Cache ─────────────────────────────────────────────────────────────────────
 # WU obs are final once the day is over. During the day, refresh frequently.
 _wu_cache: dict[str, tuple[Optional[dict], float]] = {}
-_wu_lock  = threading.Lock()
+_wu_lock_inst: Optional[asyncio.Lock] = None
 
 WU_CACHE_TTL_ACTIVE  = 15 * 60   # 15 min: today's market still resolving
 WU_CACHE_TTL_SETTLED = 24 * 3600  # 24 h: past date, data won't change
@@ -42,6 +42,13 @@ WU_HEADERS = {
     "Connection": "keep-alive",
     "Upgrade-Insecure-Requests": "1",
 }
+
+
+def _get_wu_lock() -> asyncio.Lock:
+    global _wu_lock_inst
+    if _wu_lock_inst is None:
+        _wu_lock_inst = asyncio.Lock()
+    return _wu_lock_inst
 
 
 def _cache_ttl(target_date: date) -> float:
@@ -164,7 +171,7 @@ def _extract_temp_from_html_table(html: str) -> Optional[float]:
     return None
 
 
-def get_wu_daily_high(
+async def get_wu_daily_high(
     icao: str,
     target_date: date,
     unit: str = "F",
@@ -191,7 +198,7 @@ def get_wu_daily_high(
     now  = time.time()
     ttl  = _cache_ttl(target_date)
 
-    with _wu_lock:
+    async with _get_wu_lock():
         entry = _wu_cache.get(key)
         if entry is not None:
             result, ts = entry
@@ -207,17 +214,16 @@ def get_wu_daily_high(
 
     try:
         print(f"[WU] Fetching {icao} {target_date} ...")
-        resp = requests.get(url, headers=WU_HEADERS, timeout=15, allow_redirects=True)
-        if resp.status_code == 404:
-            print(f"[WU] 404 for {icao} {target_date}")
-            with _wu_lock:
-                _wu_cache[key] = (None, now)
-            return None
-        if resp.status_code != 200:
-            print(f"[WU] HTTP {resp.status_code} for {icao} {target_date}")
-            return None   # Don't cache transient errors
-
-        html = resp.text
+        async with get_session().get(url, headers=WU_HEADERS, allow_redirects=True) as resp:
+            if resp.status == 404:
+                print(f"[WU] 404 for {icao} {target_date}")
+                async with _get_wu_lock():
+                    _wu_cache[key] = (None, now)
+                return None
+            if resp.status != 200:
+                print(f"[WU] HTTP {resp.status} for {icao} {target_date}")
+                return None   # Don't cache transient errors
+            html = await resp.text()
 
         # Try __NEXT_DATA__ first (authoritative), then HTML table fallback
         temp_f = _extract_temp_from_next_data(html)
@@ -250,12 +256,12 @@ def get_wu_daily_high(
         }
         print(f"[WU] {icao} {target_date}: high={temp_f}°F ({temp_c}°C)")
 
-        with _wu_lock:
+        async with _get_wu_lock():
             _wu_cache[key] = (result, now)
 
         return {**result, "wu_source": "live"}
 
-    except requests.exceptions.Timeout:
+    except asyncio.TimeoutError:
         print(f"[WU] Timeout for {icao} {target_date}")
         return None
     except Exception as e:
@@ -263,6 +269,6 @@ def get_wu_daily_high(
         return None
 
 
-def get_wu_temp_cached(icao: str, target_date: date) -> Optional[dict]:
+async def get_wu_temp_cached(icao: str, target_date: date) -> Optional[dict]:
     """Thin wrapper: always go through the main cache."""
-    return get_wu_daily_high(icao, target_date)
+    return await get_wu_daily_high(icao, target_date)

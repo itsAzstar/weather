@@ -5,9 +5,8 @@ FastAPI 後端 — Polymarket Weather Arbitrage Dashboard
 訪問: http://localhost:8000
 """
 
-import threading
+import asyncio
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -32,27 +31,21 @@ from fetcher_weather    import resolve_location
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """
-    FastAPI lifespan replaces the deprecated @app.on_event("startup").
-    All background threads are started here; the yield hands control to the app.
-    On shutdown, daemon threads die automatically with the process.
-
-    Using @app.on_event was deprecated in FastAPI 0.93 and will be removed.
-    The old pattern also fired inside the ASGI startup phase, which means any
-    exception would silently swallow the traceback on some ASGI servers.
-    The lifespan pattern makes errors visible and integrates with async context.
+    FastAPI lifespan: init aiohttp session, start background asyncio tasks,
+    yield to app, then cancel tasks + close session on shutdown.
     """
-    # 1. Pre-warm scan so first page load is instant
-    def _bg_warm():
+    from _http import init_session, close_session
+    await init_session()
+
+    async def _bg_warm():
+        await asyncio.sleep(2)
         try:
-            time.sleep(2)
-            api_opportunities(refresh=False)
+            await api_opportunities(refresh=False)
         except Exception:
             pass
-    threading.Thread(target=_bg_warm, daemon=True, name="bg-warm").start()
 
-    # 2. Background scheduler: auto-resolve settled markets every 10 min
-    def _bg_resolver():
-        time.sleep(30)   # Let server fully start first
+    async def _bg_resolver():
+        await asyncio.sleep(30)
         while True:
             try:
                 init_db()
@@ -61,24 +54,32 @@ async def _lifespan(app: FastAPI):
                     print(f"[Scheduler] Auto-resolved {n} settled market(s)")
             except Exception as e:
                 print(f"[Scheduler] Resolution error: {e}")
-            time.sleep(10 * 60)
-    threading.Thread(target=_bg_resolver, daemon=True, name="bg-resolver").start()
-    print("[Scheduler] Background resolution scheduler started (every 10 min)")
+            await asyncio.sleep(10 * 60)
 
-    # 3. Background auto-scanner: refresh market data every 3 minutes
-    def _bg_scanner():
-        time.sleep(60)   # Let pre-warm finish first
+    async def _bg_scanner():
+        await asyncio.sleep(60)
         while True:
             try:
-                api_opportunities(refresh=True)
+                await api_opportunities(refresh=True)
                 print("[Scheduler] Auto-scan complete")
             except Exception as e:
                 print(f"[Scheduler] Auto-scan error: {e}")
-            time.sleep(3 * 60)
-    threading.Thread(target=_bg_scanner, daemon=True, name="bg-scanner").start()
-    print("[Scheduler] Auto-scanner started (every 3 min)")
+            await asyncio.sleep(3 * 60)
 
-    yield   # ← app runs here; everything after yield is shutdown logic
+    bg_tasks = [
+        asyncio.create_task(_bg_warm(),     name="bg-warm"),
+        asyncio.create_task(_bg_resolver(), name="bg-resolver"),
+        asyncio.create_task(_bg_scanner(),  name="bg-scanner"),
+    ]
+    print("[Scheduler] Background asyncio tasks started")
+
+    yield   # ← app runs here
+
+    for t in bg_tasks:
+        t.cancel()
+    await asyncio.gather(*bg_tasks, return_exceptions=True)
+    await close_session()
+    print("[Shutdown] aiohttp session closed")
 
 
 app = FastAPI(title="Weather Arb Dashboard", version="2.0", lifespan=_lifespan)
@@ -92,19 +93,19 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 _cache: dict = {}
 _cache_ts:   float = 0.0
 CACHE_TTL   = 30 * 60   # 30 minutes
-_scan_lock  = threading.Lock()  # prevent concurrent scans
+_scan_lock  = asyncio.Lock()    # prevent concurrent scans (asyncio-safe)
 
 
 def _is_cache_valid() -> bool:
     return (time.time() - _cache_ts) < CACHE_TTL
 
 
-def _run_scan() -> list[dict]:
+async def _run_scan() -> list[dict]:
     """完整掃描：fetch → parse → compare → consensus → log。"""
     today = date.today()
 
     # 1. 抓市場 (mock only if no live markets found)
-    markets = fetch_all_weather_markets(use_mock_fallback=True)
+    markets = await fetch_all_weather_markets(use_mock_fallback=True)
 
     # 1b. Pre-filter: keep only actionable markets to limit API calls.
     live = [m for m in markets if m.get("source") != "mock"]
@@ -158,12 +159,13 @@ def _run_scan() -> list[dict]:
                 pass
 
     print(f"[Scan] Pre-fetching weather for {len(unique_loc_dates)} unique city+date combos...")
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        list(ex.map(lambda ld: _get_weather_cached(ld[0], ld[1]), unique_loc_dates))
+    await asyncio.gather(*[
+        _get_weather_cached(loc, d) for loc, d in unique_loc_dates
+    ])
     print(f"[Scan] Weather pre-fetch done.")
 
     # 3. 基本比較（Open-Meteo Ensemble — uses cached weather）
-    results = compare_all_markets(markets)
+    results = await compare_all_markets(markets)
 
     # 4. 三模型共識（並行處理，只對有機會/有 edge 的市場）
     def _enrich_one(r: dict) -> dict:
@@ -217,8 +219,10 @@ def _run_scan() -> list[dict]:
                 pass
         return r
 
-    with ThreadPoolExecutor(max_workers=4) as executor:  # 8→4: consensus semaphore handles the rest
-        enriched = list(executor.map(_enrich_one, results))
+    # asyncio.to_thread runs sync _enrich_one in the default thread pool without blocking the loop
+    enriched = list(await asyncio.gather(*[
+        asyncio.to_thread(_enrich_one, r) for r in results
+    ]))
 
     # ── Portfolio Kelly: cap total exposure for mutually exclusive buckets ───────
     # Temperature buckets for the same (city, date) are mutually exclusive events
@@ -249,17 +253,15 @@ def _run_scan() -> list[dict]:
             print(f"[Portfolio Kelly] {city} {date_s}: {len(group)} buckets "
                   f"${total_kelly:.2f} → ${MAX_GROUP_KELLY:.2f} (scale={scale:.3f})")
 
-    # ── Background: resolve any past markets (Polymarket API → archive fallback) ─
-    # Run in a daemon thread so it doesn't block scan response
-    import threading as _threading
-    def _bg_resolve():
+    # ── Background: resolve any past markets (non-blocking asyncio task) ────────
+    async def _bg_resolve():
         try:
-            n = auto_resolve_past_markets()
+            n = await asyncio.to_thread(auto_resolve_past_markets)
             if n:
                 print(f"[Scan] Background resolved {n} past market(s)")
         except Exception as e:
             print(f"[Scan] Background resolve error: {e}")
-    _threading.Thread(target=_bg_resolve, daemon=True).start()
+    asyncio.create_task(_bg_resolve())
 
     return enriched
 
@@ -272,23 +274,25 @@ def index():
 
 
 @app.get("/api/opportunities")
-def api_opportunities(refresh: bool = False):
+async def api_opportunities(refresh: bool = False):
     global _cache, _cache_ts
     if not refresh and _is_cache_valid() and _cache:
         return JSONResponse({**_cache, "cached": True})
 
-    # Only one scan at a time — if already scanning, wait and return result
-    if not _scan_lock.acquire(timeout=120):
+    # Only one scan at a time — if already scanning, wait and return cached result
+    try:
+        await asyncio.wait_for(_scan_lock.acquire(), timeout=120)
+    except asyncio.TimeoutError:
         if _cache:
             return JSONResponse({**_cache, "cached": True, "note": "scan_in_progress"})
         return JSONResponse({"error": "scan timeout", "opportunities": [], "no_edge": [], "skipped": []}, status_code=503)
 
     try:
-        # Double-check cache after acquiring lock (another thread may have just scanned)
+        # Double-check cache after acquiring lock (another coroutine may have just scanned)
         if not refresh and _is_cache_valid() and _cache:
             return JSONResponse({**_cache, "cached": True})
 
-        results = _run_scan()
+        results = await _run_scan()
         scanned_at = datetime.now(timezone.utc).isoformat()
 
         raw_opps = [r for r in results if r.get("is_opportunity")]
@@ -407,11 +411,11 @@ def api_history_resolved(days: int = 90):
 
 
 @app.post("/api/refresh")
-def api_refresh():
+async def api_refresh():
     """強制清除快取並重新掃描。"""
     global _cache_ts
     _cache_ts = 0.0
-    return api_opportunities(refresh=True)
+    return await api_opportunities(refresh=True)
 
 
 # Startup logic moved to _lifespan context manager (defined near top of file).

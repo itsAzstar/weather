@@ -7,10 +7,11 @@ Polymarket markets resolve against specific airport weather stations
 (ASOS/AWOS via Weather Underground / NOAA), not city-level forecasts.
 """
 
-import threading
+import asyncio
 import time
-import requests
 from typing import Optional
+
+from _http import get_session
 
 # ── ICAO station code mapping ─────────────────────────────────────────────────
 # Format: city_key → [primary_icao, ...]  (ordered by relevance)
@@ -146,10 +147,17 @@ CITY_TO_ICAO: dict[str, list[str]] = {
 
 # ── NWS observation cache ─────────────────────────────────────────────────────
 _obs_cache: dict[str, tuple[Optional[dict], float]] = {}  # icao → (result, ts)
-_obs_lock = threading.Lock()
+_obs_lock_inst: Optional[asyncio.Lock] = None
 OBS_CACHE_TTL = 10 * 60  # 10 minutes (NWS obs update hourly)
 
 NWS_HEADERS = {"User-Agent": "WeatherArb/2.0 (contact@example.com)"}
+
+
+def _get_obs_lock() -> asyncio.Lock:
+    global _obs_lock_inst
+    if _obs_lock_inst is None:
+        _obs_lock_inst = asyncio.Lock()
+    return _obs_lock_inst
 
 
 def resolve_station(city: str) -> Optional[str]:
@@ -191,16 +199,16 @@ def _parse_obs_age(ts_str: str) -> tuple[Optional[str], Optional[float]]:
         return ts_str, None
 
 
-def _get_nws_obs(icao: str) -> Optional[dict]:
+async def _get_nws_obs(icao: str) -> Optional[dict]:
     """Fetch current observation from NWS (US stations only)."""
     url = f"https://api.weather.gov/stations/{icao}/observations/latest"
     try:
         print(f"[Stations/NWS] Fetching obs for {icao} ...")
-        resp = requests.get(url, headers=NWS_HEADERS, timeout=10)
-        if resp.status_code == 404:
-            return None
-        resp.raise_for_status()
-        data = resp.json()
+        async with get_session().get(url, headers=NWS_HEADERS) as resp:
+            if resp.status == 404:
+                return None
+            resp.raise_for_status()
+            data = await resp.json()
     except Exception as e:
         print(f"[Stations/NWS] Error for {icao}: {e}")
         return None
@@ -233,7 +241,7 @@ def _get_nws_obs(icao: str) -> Optional[dict]:
         return None
 
 
-def _get_metar_obs(icao: str) -> Optional[dict]:
+async def _get_metar_obs(icao: str) -> Optional[dict]:
     """
     Fetch current METAR for any ICAO station via aviationweather.gov.
     Covers worldwide stations (RJTT, RKSS, EGLL, VHHH, etc.) that NWS won't serve.
@@ -244,9 +252,9 @@ def _get_metar_obs(icao: str) -> Optional[dict]:
     params = {"ids": icao, "format": "json", "hours": 2}
     try:
         print(f"[Stations/METAR] Fetching obs for {icao} ...")
-        resp = requests.get(url, params=params, headers=NWS_HEADERS, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
+        async with get_session().get(url, params=params, headers=NWS_HEADERS) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
         if not data:
             print(f"[Stations/METAR] No data for {icao}")
             return None
@@ -278,7 +286,7 @@ def _get_metar_obs(icao: str) -> Optional[dict]:
         return None
 
 
-def get_station_obs(icao: str) -> Optional[dict]:
+async def get_station_obs(icao: str) -> Optional[dict]:
     """
     Fetch current observation for any ICAO station.
     - US stations (K prefix): NWS API
@@ -294,7 +302,7 @@ def get_station_obs(icao: str) -> Optional[dict]:
 
     # Check cache
     now = time.time()
-    with _obs_lock:
+    async with _get_obs_lock():
         entry = _obs_cache.get(icao)
         if entry is not None:
             result, ts = entry
@@ -303,10 +311,10 @@ def get_station_obs(icao: str) -> Optional[dict]:
 
     # Dispatch to correct source
     if _is_us_icao(icao):
-        result = _get_nws_obs(icao)
+        result = await _get_nws_obs(icao)
     else:
-        result = _get_metar_obs(icao)
+        result = await _get_metar_obs(icao)
 
-    with _obs_lock:
+    async with _get_obs_lock():
         _obs_cache[icao] = (result, now)
     return result

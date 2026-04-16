@@ -4,22 +4,47 @@ Fetches active Polymarket weather-related markets from CLOB and Gamma APIs.
 """
 
 import re
-import requests
+import asyncio
 import time
 import json
-import threading
 from datetime import datetime, timezone, date, timedelta
+from typing import Optional
+
+from _http import get_session
 
 CLOB_BASE = "https://clob.polymarket.com"
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 
 # ── L2 order book cache ───────────────────────────────────────────────────────
 _book_cache: dict[str, tuple] = {}   # token_id → (result_or_None, timestamp)
-_book_lock  = threading.Lock()
+_book_lock_inst: Optional[asyncio.Lock] = None
 BOOK_CACHE_TTL = 2 * 60   # 2 minutes: order books are volatile
 
 
-def fetch_clob_book(token_id: str) -> dict | None:
+def _get_book_lock() -> asyncio.Lock:
+    global _book_lock_inst
+    if _book_lock_inst is None:
+        _book_lock_inst = asyncio.Lock()
+    return _book_lock_inst
+
+
+async def _async_get(url: str, params: dict = None, retries: int = 2) -> Optional[dict | list]:
+    for attempt in range(retries):
+        try:
+            async with get_session().get(url, params=params) as resp:
+                if resp.status == 429:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                resp.raise_for_status()
+                return await resp.json()
+        except Exception as e:
+            print(f"  [HTTP error] {e} — attempt {attempt+1}/{retries}")
+            if attempt < retries - 1:
+                await asyncio.sleep(2 ** attempt)
+    return None
+
+
+async def fetch_clob_book(token_id: str) -> dict | None:
     """
     Fetch the L2 order book for a YES token from Polymarket CLOB.
 
@@ -38,7 +63,7 @@ def fetch_clob_book(token_id: str) -> dict | None:
         return None
 
     now = time.time()
-    with _book_lock:
+    async with _get_book_lock():
         entry = _book_cache.get(token_id)
         if entry:
             result, ts = entry
@@ -46,9 +71,9 @@ def fetch_clob_book(token_id: str) -> dict | None:
                 return result
 
     try:
-        data = _safe_get(f"{CLOB_BASE}/book", params={"token_id": token_id})
+        data = await _async_get(f"{CLOB_BASE}/book", params={"token_id": token_id})
         if not data:
-            with _book_lock:
+            async with _get_book_lock():
                 _book_cache[token_id] = (None, now)
             return None
 
@@ -82,7 +107,7 @@ def fetch_clob_book(token_id: str) -> dict | None:
             print(f"[CLOB Book] {token_id[:10]}: bid={best_bid:.3f} ask={best_ask:.3f} "
                   f"spread={spread:.3f} depth={len(asks_full)}A/{len(bids_full)}B")
 
-        with _book_lock:
+        async with _get_book_lock():
             _book_cache[token_id] = (result, now)
         return result
 
@@ -434,26 +459,6 @@ def _is_weather_market(text: str) -> bool:
     return True
 
 
-def _safe_get(url: str, params: dict = None, retries: int = 2, timeout: int = 10) -> dict | list | None:
-    """GET with retry logic."""
-    for attempt in range(retries):
-        try:
-            resp = requests.get(url, params=params, timeout=timeout)
-            resp.raise_for_status()
-            return resp.json()
-        except requests.exceptions.HTTPError as e:
-            print(f"  [HTTP error] {e} — attempt {attempt + 1}/{retries}")
-        except requests.exceptions.ConnectionError as e:
-            print(f"  [Connection error] {e} — attempt {attempt + 1}/{retries}")
-        except requests.exceptions.Timeout:
-            print(f"  [Timeout] — attempt {attempt + 1}/{retries}")
-        except Exception as e:
-            print(f"  [Unexpected error] {e} — attempt {attempt + 1}/{retries}")
-        if attempt < retries - 1:
-            time.sleep(2 ** attempt)
-    return None
-
-
 def _parse_clob_market(raw: dict) -> dict | None:
     """Normalise a raw CLOB market dict into our schema."""
     question = raw.get("question", "")
@@ -555,7 +560,7 @@ def _parse_gamma_market(raw: dict) -> dict | None:
     }
 
 
-def fetch_clob_markets(max_pages: int = 5) -> list[dict]:
+async def fetch_clob_markets(max_pages: int = 5) -> list[dict]:
     """Fetch weather markets from Polymarket CLOB API (paginated)."""
     print("[CLOB] Fetching markets from Polymarket CLOB API...")
     markets = []
@@ -566,7 +571,7 @@ def fetch_clob_markets(max_pages: int = 5) -> list[dict]:
         if next_cursor:
             params["next_cursor"] = next_cursor
 
-        data = _safe_get(f"{CLOB_BASE}/markets", params=params)
+        data = await _async_get(f"{CLOB_BASE}/markets", params=params)
         if data is None:
             print(f"  [CLOB] Failed to fetch page {page + 1}, stopping.")
             break
@@ -587,13 +592,13 @@ def fetch_clob_markets(max_pages: int = 5) -> list[dict]:
 
         if not next_cursor or not raw_list:
             break
-        time.sleep(0.2)
+        await asyncio.sleep(0.2)
 
     print(f"  [CLOB] Found {len(markets)} weather markets")
     return markets
 
 
-def fetch_gamma_markets(max_pages: int = 5) -> list[dict]:
+async def fetch_gamma_markets(max_pages: int = 5) -> list[dict]:
     """Fetch weather markets from Polymarket Gamma API."""
     print("[Gamma] Fetching markets from Polymarket Gamma API...")
     markets = []
@@ -605,7 +610,7 @@ def fetch_gamma_markets(max_pages: int = 5) -> list[dict]:
             "limit": 100,
             "offset": offset,
         }
-        data = _safe_get(f"{GAMMA_BASE}/markets", params=params)
+        data = await _async_get(f"{GAMMA_BASE}/markets", params=params)
         if data is None:
             print(f"  [Gamma] Failed at offset {offset}, stopping.")
             break
@@ -620,13 +625,13 @@ def fetch_gamma_markets(max_pages: int = 5) -> list[dict]:
 
         if len(raw_list) < 100:
             break
-        time.sleep(0.2)
+        await asyncio.sleep(0.2)
 
     print(f"  [Gamma] Found {len(markets)} weather markets")
     return markets
 
 
-def fetch_gamma_weather_events(max_pages: int = 2) -> list[dict]:
+async def fetch_gamma_weather_events(max_pages: int = 2) -> list[dict]:
     """
     Fetch real Polymarket daily temperature markets via Gamma events API.
     These are 'Highest temperature in [City] on [Date]?' markets with
@@ -647,7 +652,7 @@ def fetch_gamma_weather_events(max_pages: int = 2) -> list[dict]:
             "order":      "volume24hr",
             "ascending":  "false",
         }
-        data = _safe_get(f"{GAMMA_BASE}/events", params=params)
+        data = await _async_get(f"{GAMMA_BASE}/events", params=params)
         if data is None:
             print(f"  [Gamma Events] Failed at offset {offset}, stopping.")
             break
@@ -711,7 +716,7 @@ def fetch_gamma_weather_events(max_pages: int = 2) -> list[dict]:
 
         if len(events) < 100:
             break
-        time.sleep(0.2)
+        await asyncio.sleep(0.2)
 
     print(f"  [Gamma Events] Found {len(markets)} temperature bucket markets")
     return markets
@@ -727,20 +732,17 @@ def _deduplicate(markets: list[dict]) -> list[dict]:  # also exported as public 
     return list(seen.values())
 
 
-def fetch_all_weather_markets(use_mock_fallback: bool = True) -> list[dict]:
+async def fetch_all_weather_markets(use_mock_fallback: bool = True) -> list[dict]:
     """
     Main entry point. Fetches CLOB, Gamma keyword search, and Gamma weather events in parallel.
     Falls back to mock data if nothing found.
     Returns a deduplicated list of weather market dicts.
     """
-    from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=3) as ex:
-        f_clob   = ex.submit(fetch_clob_markets, 1)         # keyword scan (1 page)
-        f_gamma  = ex.submit(fetch_gamma_markets, 2)        # keyword scan (2 pages)
-        f_events = ex.submit(fetch_gamma_weather_events, 2) # real temp markets (2 pages)
-        clob   = f_clob.result()
-        gamma  = f_gamma.result()
-        events = f_events.result()
+    clob, gamma, events = await asyncio.gather(
+        fetch_clob_markets(1),
+        fetch_gamma_markets(2),
+        fetch_gamma_weather_events(2),
+    )
 
     combined = clob + gamma + events
     combined = _deduplicate(combined)
@@ -762,5 +764,13 @@ deduplicate = _deduplicate
 
 
 if __name__ == "__main__":
-    markets = fetch_all_weather_markets()
-    print(json.dumps(markets[:3], indent=2, default=str))
+    import asyncio as _asyncio
+    from _http import init_session, close_session
+
+    async def _main():
+        await init_session()
+        markets = await fetch_all_weather_markets()
+        print(json.dumps(markets[:3], indent=2, default=str))
+        await close_session()
+
+    _asyncio.run(_main())

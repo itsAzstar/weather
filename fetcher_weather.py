@@ -3,12 +3,12 @@ fetcher_weather.py
 Fetches ensemble weather forecasts from Open-Meteo for a given location and date.
 """
 
+import asyncio
 import math
-import requests
-import threading
-import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
+
+from _http import get_session
 
 
 def _norm_cdf(z: float) -> float:
@@ -20,7 +20,13 @@ FORECAST_API   = "https://api.open-meteo.com/v1/forecast"    # fast daily, no en
 
 # Limit concurrent in-flight requests to Open-Meteo to 4.
 # The pre-warm step can have 6 workers all hitting this; cap to prevent 429 bursts.
-_openmeteo_sem = threading.Semaphore(4)
+_openmeteo_sem: Optional[asyncio.Semaphore] = None
+
+def _get_openmeteo_sem() -> asyncio.Semaphore:
+    global _openmeteo_sem
+    if _openmeteo_sem is None:
+        _openmeteo_sem = asyncio.Semaphore(4)
+    return _openmeteo_sem
 
 # Supported city → (lat, lon) lookup
 CITY_COORDS: dict[str, tuple[float, float]] = {
@@ -116,27 +122,25 @@ def resolve_location(location: str) -> Optional[tuple[float, float]]:
     return None
 
 
-def _safe_get(url: str, params: dict, retries: int = 2, timeout: int = 8) -> Optional[dict]:
-    with _openmeteo_sem:
+async def _async_get(url: str, params: dict, retries: int = 2) -> Optional[dict]:
+    sem = _get_openmeteo_sem()
+    async with sem:
         for attempt in range(retries):
             try:
-                resp = requests.get(url, params=params, timeout=timeout)
-                resp.raise_for_status()
-                return resp.json()
-            except requests.exceptions.HTTPError as e:
-                print(f"    [HTTP error] {e} — attempt {attempt + 1}/{retries}")
-            except requests.exceptions.ConnectionError as e:
-                print(f"    [Connection error] {e} — attempt {attempt + 1}/{retries}")
-            except requests.exceptions.Timeout:
-                print(f"    [Timeout] — attempt {attempt + 1}/{retries}")
+                async with get_session().get(url, params=params) as resp:
+                    if resp.status == 429:
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+                    resp.raise_for_status()
+                    return await resp.json()
             except Exception as e:
-                print(f"    [Unexpected] {e} — attempt {attempt + 1}/{retries}")
-            if attempt < retries - 1:
-                time.sleep(2 ** attempt)
-        return None
+                print(f"    [HTTP error] {e} — attempt {attempt+1}/{retries}")
+                if attempt < retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+    return None
 
 
-def fetch_daily_forecast(
+async def fetch_daily_forecast(
     lat: float,
     lon: float,
     target_date: date,
@@ -165,7 +169,7 @@ def fetch_daily_forecast(
         # the model catches nighttime temps of the wrong local day.
         "timezone":             "auto",
     }
-    data = _safe_get(FORECAST_API, params, retries=2, timeout=6)
+    data = await _async_get(FORECAST_API, params, retries=2)
     if data is None:
         return None
 
@@ -226,7 +230,7 @@ def fetch_daily_forecast(
     }
 
 
-def fetch_ensemble_forecast(
+async def fetch_ensemble_forecast(
     lat: float,
     lon: float,
     target_date: date,
@@ -255,11 +259,11 @@ def fetch_ensemble_forecast(
         "timezone": "auto",   # local timezone so hours map to the LOCAL calendar day
     }
 
-    data = _safe_get(ENSEMBLE_API, params)
+    data = await _async_get(ENSEMBLE_API, params)
     if data is None:
         # Fallback: try gfs_seamless model
         params["models"] = "gfs_seamless"
-        data = _safe_get(ENSEMBLE_API, params)
+        data = await _async_get(ENSEMBLE_API, params)
 
     if data is None:
         return None
@@ -398,7 +402,7 @@ def _process_ensemble_data(data: dict, target_date: date, lat: float, lon: float
     }
 
 
-def get_weather_for_location_date(
+async def get_weather_for_location_date(
     location: str,
     target_date: date,
 ) -> Optional[dict]:
@@ -413,10 +417,10 @@ def get_weather_for_location_date(
     lat, lon = coords
     print(f"    [Weather] Fetching forecast for {location} ({lat:.2f},{lon:.2f}) on {target_date}")
     # Try fast daily API first (no rate limit, <1s)
-    result = fetch_daily_forecast(lat, lon, target_date)
+    result = await fetch_daily_forecast(lat, lon, target_date)
     if result is None:
         # Fall back to ensemble
-        result = fetch_ensemble_forecast(lat, lon, target_date)
+        result = await fetch_ensemble_forecast(lat, lon, target_date)
     if result:
         result["location"] = location
     return result
@@ -480,11 +484,19 @@ def get_wind_exceed_probability(weather: dict, threshold_mph: float) -> float:
 
 
 if __name__ == "__main__":
+    import asyncio as _asyncio
     import json
-    today = date.today()
-    for city in ["London", "New York", "Tokyo", "Dubai"]:
-        w = get_weather_for_location_date(city, today + timedelta(days=1))
-        if w:
-            print(json.dumps(w, indent=2))
-        else:
-            print(f"Failed to fetch weather for {city}")
+    from _http import init_session, close_session
+
+    async def _main():
+        await init_session()
+        today = date.today()
+        for city in ["London", "New York", "Tokyo", "Dubai"]:
+            w = await get_weather_for_location_date(city, today + timedelta(days=1))
+            if w:
+                print(json.dumps(w, indent=2))
+            else:
+                print(f"Failed to fetch weather for {city}")
+        await close_session()
+
+    _asyncio.run(_main())
