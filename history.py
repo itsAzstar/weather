@@ -91,28 +91,56 @@ def init_db():
             ("obs_adjusted",              "INTEGER"),  # 0/1 — METAR/WU observation was folded in
             ("time_remaining_hours",      "REAL"),
             ("in_latency_arb_zone",       "INTEGER"),  # 0/1
+            # Dedup key — UTC date of the prediction, populated at insert time
+            # so a UNIQUE index can enforce one-row-per-market-per-day atomically.
+            # Previous SELECT-then-INSERT dedup was racy: concurrent _enrich_one
+            # workers all saw "no existing" and all INSERTed → 100× duplicates.
+            ("predicted_date",  "TEXT"),
         ]:
             try:
                 conn.execute(f"ALTER TABLE predictions ADD COLUMN {col} {coltype}")
             except Exception:
                 pass  # column already exists
 
+        # Backfill predicted_date for legacy rows (UTC date of predicted_at)
+        conn.execute("""
+            UPDATE predictions
+               SET predicted_date = substr(predicted_at, 1, 10)
+             WHERE predicted_date IS NULL AND predicted_at IS NOT NULL
+        """)
+
+        # Dedupe existing rows (keep lowest id per condition_id+predicted_date)
+        # before creating the UNIQUE index — otherwise index creation fails.
+        conn.execute("""
+            DELETE FROM predictions
+             WHERE id NOT IN (
+               SELECT MIN(id) FROM predictions
+                GROUP BY condition_id, predicted_date
+             )
+        """)
+
+        # UNIQUE index: atomic dedup. INSERT OR IGNORE becomes the one-liner
+        # replacement for the SELECT-then-INSERT race.
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_condition_date
+                ON predictions(condition_id, predicted_date)
+        """)
+
 
 def log_prediction(result: dict):
-    """記錄一次預測掃描結果。若已存在同 condition_id 今日記錄則略過。"""
+    """
+    記錄一次預測掃描結果。atomically dedup 同一市場當日記錄 via
+    UNIQUE(condition_id, predicted_date) + INSERT OR IGNORE.
+    """
     init_db()
     condition_id = result.get("condition_id", "")
-    today = date.today().isoformat()
+    if not condition_id:
+        return
+    now_utc = datetime.now(timezone.utc)
+    predicted_at = now_utc.isoformat()
+    predicted_date = now_utc.date().isoformat()
 
     with _connect() as conn:
-        # 避免同一天重複記錄同一市場
-        existing = conn.execute(
-            "SELECT id FROM predictions WHERE condition_id=? AND DATE(predicted_at)=?",
-            (condition_id, today)
-        ).fetchone()
-        if existing:
-            return
-
         parsed = result.get("parsed", {})
         bucket = result.get("temp_bucket")
         bucket_json = json.dumps(bucket) if bucket else None
@@ -126,13 +154,13 @@ def log_prediction(result: dict):
         in_latency = result.get("in_latency_arb_zone")
 
         conn.execute("""
-            INSERT INTO predictions
+            INSERT OR IGNORE INTO predictions
                 (condition_id, question, location, event_type, target_date,
                  market_price, model_prob, consensus_prob, conviction, models_agree,
-                 edge, action, predicted_at,
+                 edge, action, predicted_at, predicted_date,
                  temp_bucket_json, market_url, market_subtype, temp_display,
                  days_ahead, obs_adjusted, time_remaining_hours, in_latency_arb_zone)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             condition_id,
             result.get("question", ""),
@@ -146,7 +174,8 @@ def log_prediction(result: dict):
             result.get("models_agree"),
             result.get("edge"),
             result.get("action", ""),
-            datetime.now(timezone.utc).isoformat(),
+            predicted_at,
+            predicted_date,
             bucket_json,
             result.get("url"),
             result.get("market_subtype"),
