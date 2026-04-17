@@ -226,9 +226,18 @@ def get_brier_score(days: int = 30) -> Optional[dict]:
             "win_rate":        round(sum(1 for r in rs if r["outcome"] == 1) / len(rs), 3),
         }
 
-    # 整體 (保留向後相容)
-    bs_model_all = _brier(rows, "model_prob")
-    bs_consensus_all = _brier(rows, "consensus_prob")
+    # Headline Brier EXCLUDES the "unknown" group (rows logged before the
+    # days_ahead/obs_adjusted columns existed AND before parser/fetcher
+    # produced market_subtype + temp_bucket). Those rows have polluted
+    # consensus_prob (bucket markets run through exceed formula) and would
+    # drag the headline number into the "worse than random" zone.
+    known = [r for r in rows if r["days_ahead"] is not None]
+    bs_model_all     = _brier(known, "model_prob")     if known else None
+    bs_consensus_all = _brier(known, "consensus_prob") if known else None
+    # Fallback to all-rows if no post-fix data exists yet (fresh DB).
+    if bs_model_all is None:
+        bs_model_all     = _brier(rows, "model_prob")
+        bs_consensus_all = _brier(rows, "consensus_prob")
     ref = bs_consensus_all if bs_consensus_all is not None else bs_model_all
 
     # 污染警示：若 nowcast 組 Brier 遠優於 pure，大概率是資料洩漏

@@ -171,6 +171,26 @@ def _model_prob_from_day(day: dict, event_type: str, threshold: Optional[dict], 
     elif event_type == "temperature":
         if threshold is None:
             return 0.50
+        # Defensive: if threshold carries BOTH a lo and hi bound, this is
+        # really a bucket market that was mislabeled as "temperature".
+        # Route to bucket NCDF logic instead of exceed logic — the latter
+        # systematically reports ~0.85 for any threshold the city typically
+        # beats, producing Brier > 0.35 on narrow-bucket markets.
+        has_lo = threshold.get("lo_c") is not None or threshold.get("lo_f") is not None
+        has_hi = threshold.get("hi_c") is not None or threshold.get("hi_f") is not None
+        if has_lo and has_hi:
+            lo_c = threshold.get("lo_c")
+            if lo_c is None and threshold.get("lo_f") is not None:
+                lo_c = (threshold["lo_f"] - 32) * 5 / 9
+            hi_c = threshold.get("hi_c")
+            if hi_c is None and threshold.get("hi_f") is not None:
+                hi_c = (threshold["hi_f"] - 32) * 5 / 9
+            return _model_prob_from_day(
+                day, "temperature_bucket",
+                {"lo_c": lo_c, "hi_c": hi_c},
+                direction,
+            )
+
         thresh_c = None
         if threshold.get("value_c") is not None:
             thresh_c = threshold["value_c"]
