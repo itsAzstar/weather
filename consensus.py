@@ -114,36 +114,43 @@ def _rain_prob_from_day(day: dict) -> float:
 
 
 def _temp_exceed_prob(day: dict, thresh_c: float) -> float:
-    """估算最高溫超過閾值的概率（0-1）。"""
+    """
+    P(daily_max >= thresh_c) via normal CDF with sigma = 2.5 °C
+    (matches comparator's daily-max RMSE assumption for GFS).
+
+    Previous step function (0.85/0.55/0.35/0.15/0.05) produced systematic
+    miscalibration: every forecast that beat the threshold was clipped to
+    exactly 0.85 regardless of margin, so a 1 °C buffer and a 10 °C buffer
+    got the same probability. NCDF scales smoothly with the gap.
+    """
     if day is None:
         return 0.5
     t_max = day.get("temp_max_c")
-    t_min = day.get("temp_min_c")
     if t_max is None:
         return 0.5
-    # 用 max 和 min 的線性插值
-    if t_max >= thresh_c:
-        return 0.85
-    if t_min is not None and t_min >= thresh_c:
-        return 0.55
-    gap = thresh_c - t_max
-    if gap <= 2:   return 0.35
-    if gap <= 5:   return 0.15
-    return 0.05
+    import math
+    sigma = 2.5
+    z = (t_max - thresh_c) / sigma
+    p = 0.5 * (1.0 + math.erf(z / math.sqrt(2)))
+    return max(0.02, min(0.98, round(p, 3)))
 
 
 def _wind_exceed_prob(day: dict, thresh_kph: float) -> float:
-    """估算最大風速超過閾值的概率（0-1）。"""
+    """
+    P(max_wind >= thresh_kph) via normal CDF with sigma = 8 kph
+    (approx GFS wind-max RMSE at 1-3 day lead). Replaces step function
+    to avoid systematic miscalibration near the threshold.
+    """
     if day is None:
         return 0.5
     w = day.get("wind_max_kph")
     if w is None:
         return 0.5
-    if w >= thresh_kph:     return 0.85
-    gap = thresh_kph - w
-    if gap <= 10:  return 0.35
-    if gap <= 25:  return 0.15
-    return 0.05
+    import math
+    sigma = 8.0
+    z = (w - thresh_kph) / sigma
+    p = 0.5 * (1.0 + math.erf(z / math.sqrt(2)))
+    return max(0.02, min(0.98, round(p, 3)))
 
 
 def _model_prob_from_day(day: dict, event_type: str, threshold: Optional[dict], direction: str) -> Optional[float]:
