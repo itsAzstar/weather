@@ -18,9 +18,11 @@ from _http import get_session
 # These are ASOS/AWOS stations used by Weather Underground / NOAA / Polymarket.
 CITY_TO_ICAO: dict[str, list[str]] = {
     # USA — East
-    "new york":        ["KJFK", "KLGA", "KEWR"],
-    "nyc":             ["KJFK", "KLGA", "KEWR"],
-    "new york city":   ["KJFK", "KLGA", "KEWR"],
+    # Polymarket NYC resolves via KLGA (LaGuardia), not KJFK.
+    # Ref: wunderground.com/history/daily/us/ny/new-york-city/KLGA — verified 2026-04-17.
+    "new york":        ["KLGA", "KJFK", "KEWR"],
+    "nyc":             ["KLGA", "KJFK", "KEWR"],
+    "new york city":   ["KLGA", "KJFK", "KEWR"],
     "boston":          ["KBOS"],
     "philadelphia":    ["KPHL"],
     "washington dc":   ["KDCA", "KIAD", "KBWI"],
@@ -50,8 +52,9 @@ CITY_TO_ICAO: dict[str, list[str]] = {
     "omaha":           ["KOMA"],
     "des moines":      ["KDSM"],
     # USA — South / Southwest
-    "dallas":          ["KDFW", "KDAL"],
-    "houston":         ["KIAH", "KHOU"],
+    # Polymarket Dallas → KDAL (Love Field), Houston → KHOU (Hobby), not the big intl ones.
+    "dallas":          ["KDAL", "KDFW"],
+    "houston":         ["KHOU", "KIAH"],
     "austin":          ["KAUS"],
     "san antonio":     ["KSAT"],
     "new orleans":     ["KMSY"],
@@ -86,7 +89,9 @@ CITY_TO_ICAO: dict[str, list[str]] = {
     "ottawa":          ["CYOW"],
     "winnipeg":        ["CYWG"],
     # UK / Europe
-    "london":          ["EGLL", "EGKK"],
+    # Polymarket London resolves via EGLC (City Airport), not EGLL (Heathrow).
+    # EGLC is a smaller airport with meaningfully different temps than Heathrow.
+    "london":          ["EGLC", "EGLL", "EGKK"],
     "paris":           ["LFPG", "LFPO"],
     "berlin":          ["EDDB"],
     "madrid":          ["LEMD"],
@@ -111,10 +116,13 @@ CITY_TO_ICAO: dict[str, list[str]] = {
     "tokyo":           ["RJTT", "RJAA"],
     "osaka":           ["RJOO", "RJBB"],
     "beijing":         ["ZBAA"],
-    "shanghai":        ["ZSSS", "ZSPD"],
+    # Polymarket resolves Shanghai markets via WU ZSPD (Pudong), not Hongqiao.
+    # Ref: wunderground.com/history/daily/cn/shanghai/ZSPD — verified 2026-04-17.
+    "shanghai":        ["ZSPD", "ZSSS"],
     "hong kong":       ["VHHH"],
-    "seoul":           ["RKSS", "RKSI"],
-    "taipei":          ["RCTP", "RCSS"],
+    # Polymarket Seoul → RKSI (Incheon Intl), Taipei → RCSS (Songshan downtown).
+    "seoul":           ["RKSI", "RKSS"],
+    "taipei":          ["RCSS", "RCTP"],
     "singapore":       ["WSSS"],
     "dubai":           ["OMDB"],
     "mumbai":          ["VABB"],
