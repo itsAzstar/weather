@@ -7,9 +7,28 @@ SQLite 歷史記錄 + Brier Score 校準追蹤。
 import os
 import sqlite3
 import json
+import ssl
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
 from typing import Optional
+
+_SSL_CTX = ssl.create_default_context()
+_SSL_CTX.check_hostname = False
+_SSL_CTX.verify_mode = ssl.CERT_NONE
+
+
+def _http_get_json(url: str, params: Optional[dict] = None, timeout: float = 10.0) -> Optional[dict]:
+    full_url = url + "?" + urllib.parse.urlencode(params) if params else url
+    try:
+        with urllib.request.urlopen(full_url, timeout=timeout, context=_SSL_CTX) as resp:
+            if resp.status != 200:
+                return None
+            return json.loads(resp.read().decode())
+    except Exception:
+        return None
 
 # Railway / production: set DB_PATH env var to a persistent volume path
 # e.g. DB_PATH=/data/weather_history.db  (Railway Volume mounted at /data)
@@ -66,6 +85,12 @@ def init_db():
             ("market_subtype",    "TEXT"),
             ("temp_display",      "TEXT"),
             ("resolution_source", "TEXT"),   # 'polymarket' | 'archive' | 'manual'
+            # Nowcast-contamination tracking (Bug A fix).
+            # Needed to separate "pure forecast" Brier from nowcast-leaked Brier.
+            ("days_ahead",                "INTEGER"),
+            ("obs_adjusted",              "INTEGER"),  # 0/1 — METAR/WU observation was folded in
+            ("time_remaining_hours",      "REAL"),
+            ("in_latency_arb_zone",       "INTEGER"),  # 0/1
         ]:
             try:
                 conn.execute(f"ALTER TABLE predictions ADD COLUMN {col} {coltype}")
@@ -91,13 +116,23 @@ def log_prediction(result: dict):
         parsed = result.get("parsed", {})
         bucket = result.get("temp_bucket")
         bucket_json = json.dumps(bucket) if bucket else None
+
+        # Nowcast-contamination flags — snapshot at prediction time.
+        # days_ahead==0 with obs_adjusted=True means model_prob has
+        # already "peeked" at realized weather; Brier on these is leaked.
+        days_ahead = result.get("days_ahead")
+        obs_adjusted = result.get("obs_adjusted")
+        time_remaining_hours = result.get("time_remaining_hours")
+        in_latency = result.get("in_latency_arb_zone")
+
         conn.execute("""
             INSERT INTO predictions
                 (condition_id, question, location, event_type, target_date,
                  market_price, model_prob, consensus_prob, conviction, models_agree,
                  edge, action, predicted_at,
-                 temp_bucket_json, market_url, market_subtype, temp_display)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 temp_bucket_json, market_url, market_subtype, temp_display,
+                 days_ahead, obs_adjusted, time_remaining_hours, in_latency_arb_zone)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             condition_id,
             result.get("question", ""),
@@ -116,6 +151,10 @@ def log_prediction(result: dict):
             result.get("url"),
             result.get("market_subtype"),
             result.get("temp_display"),
+            int(days_ahead) if isinstance(days_ahead, (int, float)) else None,
+            1 if obs_adjusted else (0 if obs_adjusted is False else None),
+            float(time_remaining_hours) if isinstance(time_remaining_hours, (int, float)) else None,
+            1 if in_latency else (0 if in_latency is False else None),
         ))
 
 
@@ -139,17 +178,29 @@ def record_outcome(condition_id: str, outcome: bool, source: str = "manual"):
         ))
 
 
+def _brier(rows, key: str) -> Optional[float]:
+    vals = [r for r in rows if r[key] is not None]
+    if not vals:
+        return None
+    return sum((r[key] - r["outcome"]) ** 2 for r in vals) / len(vals)
+
+
 def get_brier_score(days: int = 30) -> Optional[dict]:
     """
-    計算最近 N 天已結算預測的 Brier Score。
-    Brier Score = mean((predicted_prob - outcome)^2)
-    完美校準 = 0，隨機猜測 = 0.25
+    計算最近 N 天已結算預測的 Brier Score，**分三組**：
+      - pure_forecast: days_ahead >= 2  (純預報，最乾淨)
+      - near_term:     days_ahead == 1 且 obs_adjusted == 0  (明天預報)
+      - nowcast:       days_ahead <= 1 且 obs_adjusted == 1  (已混入觀測，有洩漏疑慮)
+
+    完美校準 = 0，隨機猜測 = 0.25。
+    nowcast 組若「看起來太好」(< 0.05)，很可能是資料洩漏，不是模型強。
     """
     init_db()
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     with _connect() as conn:
         rows = conn.execute("""
-            SELECT model_prob, consensus_prob, outcome
+            SELECT model_prob, consensus_prob, outcome,
+                   days_ahead, obs_adjusted
             FROM predictions
             WHERE outcome IS NOT NULL AND predicted_at >= ?
         """, (since,)).fetchall()
@@ -157,26 +208,58 @@ def get_brier_score(days: int = 30) -> Optional[dict]:
     if not rows:
         return None
 
-    total = len(rows)
-    # 優先用 consensus_prob，否則用 model_prob
-    bs_model     = sum((r["model_prob"] - r["outcome"])**2 for r in rows if r["model_prob"] is not None) / total
-    bs_consensus = None
-    consensus_rows = [r for r in rows if r["consensus_prob"] is not None]
-    if consensus_rows:
-        bs_consensus = sum((r["consensus_prob"] - r["outcome"])**2 for r in consensus_rows) / len(consensus_rows)
+    pure     = [r for r in rows if (r["days_ahead"] is not None and r["days_ahead"] >= 2)]
+    near     = [r for r in rows if (r["days_ahead"] == 1 and not r["obs_adjusted"])]
+    nowcast  = [r for r in rows if (r["days_ahead"] is not None and r["days_ahead"] <= 1 and r["obs_adjusted"] == 1)]
+    unknown  = [r for r in rows if r["days_ahead"] is None]  # 老資料沒記錄欄位
 
+    total = len(rows)
     wins = sum(1 for r in rows if r["outcome"] == 1)
+
+    def _group(rs):
+        if not rs:
+            return None
+        return {
+            "n":               len(rs),
+            "brier_model":     round(_brier(rs, "model_prob"),     4) if _brier(rs, "model_prob")     is not None else None,
+            "brier_consensus": round(_brier(rs, "consensus_prob"), 4) if _brier(rs, "consensus_prob") is not None else None,
+            "win_rate":        round(sum(1 for r in rs if r["outcome"] == 1) / len(rs), 3),
+        }
+
+    # 整體 (保留向後相容)
+    bs_model_all = _brier(rows, "model_prob")
+    bs_consensus_all = _brier(rows, "consensus_prob")
+    ref = bs_consensus_all if bs_consensus_all is not None else bs_model_all
+
+    # 污染警示：若 nowcast 組 Brier 遠優於 pure，大概率是資料洩漏
+    leakage_warning = None
+    ng = _group(nowcast)
+    pg = _group(pure)
+    if ng and pg and ng["brier_model"] is not None and pg["brier_model"] is not None:
+        if pg["brier_model"] > 0.05 and ng["brier_model"] < pg["brier_model"] * 0.5:
+            leakage_warning = (
+                f"Nowcast Brier ({ng['brier_model']:.3f}) 遠優於 pure forecast "
+                f"({pg['brier_model']:.3f}) — 疑似觀測資料洩漏至 model_prob"
+            )
+
     return {
         "total_resolved":    total,
         "wins":              wins,
         "win_rate":          round(wins / total, 3),
-        "brier_model":       round(bs_model, 4),
-        "brier_consensus":   round(bs_consensus, 4) if bs_consensus else None,
+        "brier_model":       round(bs_model_all, 4)     if bs_model_all     is not None else None,
+        "brier_consensus":   round(bs_consensus_all, 4) if bs_consensus_all is not None else None,
         "days_window":       days,
+        "groups": {
+            "pure_forecast": _group(pure),     # days_ahead >= 2
+            "near_term":     _group(near),     # days_ahead == 1, no obs
+            "nowcast":       _group(nowcast),  # obs_adjusted (可能洩漏)
+            "unknown":       _group(unknown),  # migration 前的老資料
+        },
+        "leakage_warning": leakage_warning,
         # 解讀：< 0.10 優秀，< 0.20 良好，> 0.25 = 比隨機還差
         "rating": (
-            "優秀" if (bs_consensus or bs_model) < 0.10
-            else "良好" if (bs_consensus or bs_model) < 0.20
+            "優秀" if ref is not None and ref < 0.10
+            else "良好" if ref is not None and ref < 0.20
             else "需改進"
         ),
     }
@@ -206,15 +289,10 @@ def _resolve_from_polymarket(condition_id: str) -> Optional[bool]:
       YES wins → YES token price = 1.0, NO token price = 0.0
       NO wins  → YES token price = 0.0, NO token price = 1.0
     """
-    import requests
+    data = _http_get_json(f"https://clob.polymarket.com/markets/{condition_id}", timeout=10)
+    if not data:
+        return None
     try:
-        resp = requests.get(
-            f"https://clob.polymarket.com/markets/{condition_id}",
-            timeout=10,
-        )
-        if resp.status_code != 200:
-            return None
-        data = resp.json()
         tokens = data.get("tokens", [])
         price_yes = None
         for token in tokens:
@@ -243,8 +321,11 @@ def _resolve_from_weather_archive(condition_id: str, location: str,
     Fallback: estimate resolution from Open-Meteo historical archive.
     Only works for temperature_bucket markets.
     NOTE: uses city-centre coords, not the exact station — may differ from Polymarket.
+
+    Bug C fix: `timezone=auto` so daily_max covers the city's local calendar day.
+    `timezone=UTC` split NYC's day across 20:00→20:00 local, making archive resolution
+    disagree with Polymarket (which resolves on local-day high).
     """
-    import requests
     from fetcher_weather import resolve_location
     try:
         target_d = date.fromisoformat(target_date_str)
@@ -256,7 +337,7 @@ def _resolve_from_weather_archive(condition_id: str, location: str,
             return None
         lat, lon = coords
 
-        resp = requests.get(
+        data = _http_get_json(
             "https://archive-api.open-meteo.com/v1/archive",
             params={
                 "latitude":   lat,
@@ -264,13 +345,13 @@ def _resolve_from_weather_archive(condition_id: str, location: str,
                 "start_date": target_d.isoformat(),
                 "end_date":   target_d.isoformat(),
                 "daily":      "temperature_2m_max",
-                "timezone":   "UTC",
+                "timezone":   "auto",
             },
             timeout=10,
         )
-        if resp.status_code != 200:
+        if not data:
             return None
-        temps = (resp.json().get("daily") or {}).get("temperature_2m_max") or []
+        temps = (data.get("daily") or {}).get("temperature_2m_max") or []
         if not temps or temps[0] is None:
             return None
         actual_c = temps[0]

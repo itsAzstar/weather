@@ -52,11 +52,22 @@ def _get_wu_lock() -> asyncio.Lock:
 
 
 def _cache_ttl(target_date: date) -> float:
-    """Return appropriate cache TTL based on whether the date is today or past."""
-    today = date.today()
-    if target_date >= today:
-        return WU_CACHE_TTL_ACTIVE
-    return WU_CACHE_TTL_SETTLED
+    """
+    Return appropriate cache TTL. A date is only "settled" when it's
+    unambiguously past in *every* timezone — i.e. at least 2 UTC days behind.
+    Otherwise (today ± 1 day UTC), a station somewhere on earth still has that
+    calendar day active, so use the short TTL.
+
+    Bug D fix: the previous version used `target_date >= date.today()` with
+    UTC today. From Taiwan (UTC+8) at noon, UTC today is already tomorrow for
+    NYC, so `target_date == NYC's today` fell into SETTLED (24h) and served
+    stale data for a market that was still actively resolving.
+    """
+    utc_today = datetime.now(timezone.utc).date()
+    days_behind = (utc_today - target_date).days
+    if days_behind >= 2:
+        return WU_CACHE_TTL_SETTLED
+    return WU_CACHE_TTL_ACTIVE
 
 
 def _extract_temp_from_next_data(html: str) -> Optional[float]:
@@ -238,9 +249,10 @@ async def get_wu_daily_high(
         temp_c = round((temp_f - 32) * 5 / 9, 1)
         temp_f = round(temp_f, 1)
 
-        # Estimate observation age: WU updates hourly for active days
-        today = date.today()
-        if target_date < today:
+        # Estimate observation age: WU updates hourly for active days.
+        # "Settled" only when target_date is >= 2 UTC days behind (past in every tz).
+        utc_today = datetime.now(timezone.utc).date()
+        if (utc_today - target_date).days >= 2:
             age_min = None   # Settled — age not meaningful
         else:
             # WU updates approx on the hour
