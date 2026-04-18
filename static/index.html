@@ -2360,6 +2360,11 @@ function _initHistory() {
   if (!historyLoaded) loadHistoryResolved();
 }
 
+const _SRC_LABEL = {
+  nowcast: '即時',
+  consensus_override: '共識',
+  wu_definitive: 'WU',
+};
 function buildHistoryRow(r) {
   const edge       = r.edge;
   const edgePct    = edge != null ? ((edge >= 0 ? '+' : '') + (edge * 100).toFixed(1) + '%') : '—';
@@ -2368,8 +2373,9 @@ function buildHistoryRow(r) {
   const action     = r.action || '—';
   const actionCls  = action === 'BUY YES' ? 'buy' : action === 'BUY NO' ? 'sell' : 'hold';
   const mktPct     = r.market_price != null ? (r.market_price * 100).toFixed(0) + '%' : '—';
-  const modRaw     = r.consensus_prob ?? r.model_prob;
+  const modRaw     = r.model_prob ?? r.consensus_prob;
   const modPct     = modRaw != null ? (modRaw * 100).toFixed(0) + '%' : '—';
+  const srcLabel   = _SRC_LABEL[r.model_prob_source] || '—';
   const loc        = r.location || '—';
   const locShort   = loc.length > 14 ? loc.slice(0, 13) + '…' : loc;
   const tempInline = r.temp_display ? `<span class="rc-tempdisplay">🌡${r.temp_display}</span>` : '';
@@ -2389,7 +2395,7 @@ function buildHistoryRow(r) {
   <div class="rc-date">${dateShort}</div>
   <div class="rc-action ${actionCls}">${action}</div>
   <div class="rc-num">${mktPct}<span class="rc-sub">市場</span></div>
-  <div class="rc-num">${modPct}<span class="rc-sub">模型</span></div>
+  <div class="rc-num">${modPct}<span class="rc-sub">${srcLabel}</span></div>
   <div class="rc-edge ${edgeCls}">${edgePct}</div>
   ${linkBtn}
 </div>`;
@@ -2398,6 +2404,54 @@ function buildHistoryRow(r) {
 // History tab state
 let _histTab = 'correct';
 let _histData = { correct: [], wrong: [] };
+let _histSortBy = null;
+let _histSortDir = 'desc';
+
+const _HIST_SORT_COLS = [
+  { key: 'q',      label: '市場' },
+  { key: 'loc',    label: '地點' },
+  { key: 'date',   label: '日期' },
+  { key: 'action', label: '操作' },
+  { key: 'mkt',    label: '市場' },
+  { key: 'mod',    label: '模型' },
+  { key: 'edge',   label: '套利' },
+];
+
+function _histSortKey(r, col) {
+  switch (col) {
+    case 'q':      return (r.question || r.location || '').toLowerCase();
+    case 'loc':    return (r.location || '').toLowerCase();
+    case 'date':   return r.target_date || '';
+    case 'action': return r.action === 'BUY YES' ? 2 : r.action === 'BUY NO' ? 1 : 0;
+    case 'mkt':    return r.market_price != null ? r.market_price : -1;
+    case 'mod':    return (r.model_prob ?? r.consensus_prob ?? -1);
+    case 'edge':   return r.edge != null ? r.edge : -999;
+    default:       return 0;
+  }
+}
+
+function _applyHistSort(list) {
+  if (!_histSortBy) return list;
+  const col = _histSortBy;
+  const dir = _histSortDir === 'desc' ? -1 : 1;
+  return [...list].sort((a, b) => {
+    const av = _histSortKey(a, col), bv = _histSortKey(b, col);
+    if (av < bv) return -1 * dir;
+    if (av > bv) return  1 * dir;
+    return 0;
+  });
+}
+
+function setHistSort(col) {
+  if (_histSortBy === col) {
+    _histSortDir = (_histSortDir === 'desc') ? 'asc' : 'desc';
+  } else {
+    _histSortBy = col;
+    _histSortDir = 'desc';
+  }
+  _renderHistHeader();
+  _renderHistList();
+}
 
 function setHistTab(tab) {
   _histTab = tab;
@@ -2409,21 +2463,18 @@ function setHistTab(tab) {
 function _renderHistHeader() {
   const el = document.getElementById('hist-header-strip');
   if (!el) return;
-  el.innerHTML = `
-    <div class="hdr-cell">市場<span class="hdr-arrow">⇅</span></div>
-    <div class="hdr-cell">地點<span class="hdr-arrow">⇅</span></div>
-    <div class="hdr-cell">日期<span class="hdr-arrow">⇅</span></div>
-    <div class="hdr-cell">操作<span class="hdr-arrow">⇅</span></div>
-    <div class="hdr-cell">市場<span class="hdr-arrow">⇅</span></div>
-    <div class="hdr-cell">模型<span class="hdr-arrow">⇅</span></div>
-    <div class="hdr-cell">套利<span class="hdr-arrow">⇅</span></div>
-    <div></div>`;
-  // Disable click — history rows are static (no sort for now; could add later)
-  el.querySelectorAll('.hdr-cell').forEach(c => { c.style.cursor = 'default'; c.style.pointerEvents = 'none'; });
+  const cells = _HIST_SORT_COLS.map(c => {
+    const active = _histSortBy === c.key;
+    const arrow  = active ? (_histSortDir === 'desc' ? '▼' : '▲') : '⇅';
+    const cls    = active ? 'hdr-cell active' : 'hdr-cell';
+    return `<div class="${cls}" onclick="setHistSort('${c.key}')">${c.label}<span class="hdr-arrow">${arrow}</span></div>`;
+  }).join('');
+  el.innerHTML = cells + '<div></div>';
 }
 
 function _renderHistList() {
-  const list = _histData[_histTab] || [];
+  const raw = _histData[_histTab] || [];
+  const list = _applyHistSort(raw);
   const el = document.getElementById('hist-list');
   if (!el) return;
   if (list.length === 0) {

@@ -506,7 +506,8 @@ def get_all_predictions(days: int = 90, limit: int = 200) -> dict:
             SELECT condition_id, question, location, target_date,
                    market_price, model_prob, consensus_prob, edge, action,
                    conviction, predicted_at, outcome, resolved_at,
-                   temp_bucket_json, market_url, market_subtype, temp_display
+                   temp_bucket_json, market_url, market_subtype, temp_display,
+                   model_prob_source
             FROM predictions
             WHERE predicted_at >= ?
             ORDER BY predicted_at DESC
