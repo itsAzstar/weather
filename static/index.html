@@ -769,6 +769,88 @@ main { display: grid; grid-template-columns: 1fr 290px; gap: 24px; padding: 24px
   background: rgba(239,68,68,.25);
 }
 
+/* ── Dense Row Layout (Phase 2) ──────────────────────────── */
+.card.row {
+  display: grid;
+  grid-template-columns: 1fr 120px 64px 80px 62px 62px 76px 30px;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 16px;
+  margin-bottom: 1px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  border-radius: 0;
+  cursor: pointer;
+  font-size: 12px;
+  transition: background .1s, border-color .1s;
+}
+.card.row:hover { background: #1a1a1a; border-color: var(--border2); }
+.card.row.opportunity { border-left: 3px solid var(--green); padding-left: 13px; }
+.card.row.no-edge { opacity: .6; }
+.card.row.no-edge:hover { opacity: .9; }
+.card.row.regime-shift { border-color: rgba(255,51,85,.45); border-left: 3px solid var(--red); padding-left: 13px; }
+.card.row .rc-q {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-weight: 500; color: var(--text);
+}
+.card.row .rc-q .rc-rank { color: var(--yellow); font-family: var(--mono); font-weight: 700; margin-right: 6px; font-size: 11px; }
+.card.row .rc-q .rc-tempdisplay { color: var(--blue); font-family: var(--mono); font-size: 11px; margin-left: 6px; }
+.card.row .rc-q .rc-badge {
+  display: inline-block; margin-left: 6px; padding: 1px 5px;
+  font-family: var(--mono); font-size: 9px; font-weight: 700;
+  border: 1px solid currentColor; vertical-align: 1px;
+}
+.card.row .rc-q .rc-badge.regime { color: var(--red); }
+.card.row .rc-q .rc-badge.slip   { color: var(--yellow); }
+.card.row .rc-loc {
+  font-family: var(--mono); color: var(--dim2); font-size: 11px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.card.row .rc-date { font-family: var(--mono); color: var(--dim); font-size: 11px; text-align: right; }
+.card.row .rc-action {
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  letter-spacing: .5px; text-align: center;
+}
+.card.row .rc-action.buy  { color: var(--green); }
+.card.row .rc-action.sell { color: var(--red); }
+.card.row .rc-action.hold { color: var(--dim); }
+.card.row .rc-num {
+  font-family: var(--mono); font-size: 12px; text-align: right; color: var(--dim2);
+}
+.card.row .rc-num .rc-sub { font-size: 9px; color: var(--dim); letter-spacing: .3px; display: block; }
+.card.row .rc-edge {
+  font-family: var(--mono); font-weight: 700; font-size: 14px; text-align: right;
+}
+.card.row .rc-edge.pos { color: var(--green); }
+.card.row .rc-edge.neg { color: var(--red); }
+.card.row .rc-link {
+  text-align: right; color: var(--dim); font-size: 14px;
+  text-decoration: none; padding: 4px; font-family: var(--mono);
+}
+.card.row .rc-link:hover { color: var(--green); }
+.card.row .rc-details {
+  grid-column: 1 / -1;
+  padding-top: 12px; margin-top: 8px;
+  border-top: 1px solid var(--border);
+  display: none;
+  cursor: default;
+}
+.card.row.expanded .rc-details { display: block; }
+.card.row.expanded { background: #141414; }
+.row-header-strip {
+  display: grid;
+  grid-template-columns: 1fr 120px 64px 80px 62px 62px 76px 30px;
+  gap: 12px;
+  padding: 6px 16px;
+  font-family: var(--mono); font-size: 9px; font-weight: 600;
+  letter-spacing: 1px; text-transform: uppercase; color: var(--dim);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  position: sticky; top: 52px; z-index: 5;
+}
+.row-header-strip > div:nth-child(n+3) { text-align: right; }
+.row-header-strip > div:nth-child(4)   { text-align: center; }
+
 /* ── Obs Box (current station observation) ───────────────── */
 .obs-box {
   margin-top: 8px;
@@ -841,6 +923,16 @@ main { display: grid; grid-template-columns: 1fr 290px; gap: 24px; padding: 24px
     <div id="region-filter-bar"></div>
     <!-- Risk filter tabs -->
     <div id="risk-filter-bar"></div>
+    <div class="row-header-strip">
+      <div>MARKET</div>
+      <div>LOCATION</div>
+      <div>DATE</div>
+      <div>ACTION</div>
+      <div>YES</div>
+      <div>MOD</div>
+      <div>EDGE</div>
+      <div></div>
+    </div>
     <div id="opportunities-list"><div class="skeleton"></div><div class="skeleton"></div></div>
 
     <div id="no-edge-wrap" style="margin-top:16px">
@@ -1803,6 +1895,11 @@ function getCityLocalTime(city) {
 }
 
 // ── Card Builder ───────────────────────────────────────────
+function toggleRow(el, ev) {
+  if (ev && ev.target && (ev.target.closest('.rc-link') || ev.target.closest('a') || ev.target.closest('.rc-details'))) return;
+  el.classList.toggle('expanded');
+}
+
 function buildCard(r, isOpp, rank) {
   const edge   = r.edge || 0;
   const cons   = r.consensus || {};
@@ -2073,63 +2170,50 @@ function buildCard(r, isOpp, rank) {
   const agreeClass = agreeFrac != null ? (agreeFrac >= 0.75 ? 'high' : agreeFrac >= 0.5 ? 'mid' : 'low') : '';
 
   const regimeCls = isRegime ? ' regime-shift' : '';
-  return `
-<${tag} class="card ${cardClass}${regimeCls}" ${linkAttr}>
-  ${top5Badge}
-  ${isRegime ? `<span class="regime-badge" style="position:absolute;top:${top5Badge?'26':'10'}px;left:10px">⚡ Kalman 突變重置</span>` : ''}
-  ${linkHint ? `<span class="card-link-hint">${linkHint}</span>` : ''}
 
-  <div class="card-head" style="${top5Badge || isRegime ? 'padding-top:26px' : ''}">
-    <div class="card-header">
-      <div class="card-question">${r.question || '—'}</div>
-      <div class="edge-badge ${edgeClass}" title="紙面 Edge: ${edgeSign}${pct(edge)}${halfSpread != null ? ' | 半價差: ' + pct(halfSpread) : ''}">
-        ${r.exec_edge != null ? (execEdge >= 0 ? '+' : '') + pct(execEdge) : edgeSign + pct(edge)}
-        ${halfSpread != null ? `<span style="font-size:10px;opacity:0.55;margin-left:3px">-${pct(halfSpread)}</span>` : ''}
-      </div>
-    </div>
-    <div class="card-meta">
-      ${actionTag}
-      ${tempBadge}
+  // ── Dense row view ─────────────────────────────────────────
+  const rankIcon = (isOpp && rank != null && rank >= 1 && rank <= 5)
+    ? `<span class="rc-rank">#${rank}</span>` : '';
+  const tempInline = (isTempBucket && r.temp_display)
+    ? `<span class="rc-tempdisplay">🌡${r.temp_display}</span>` : '';
+  const regimeInline = isRegime ? `<span class="rc-badge regime">⚡REGIME</span>` : '';
+  const slipInline   = hasSlippage ? `<span class="rc-badge slip" title="滑點 −${pct(vwapDelta)}">⚠SLIP</span>` : '';
+
+  const actionCls = r.action === 'BUY YES' ? 'buy' : r.action === 'BUY NO' ? 'sell' : 'hold';
+  const actionShort = r.action === 'BUY YES' ? 'BUY YES' : r.action === 'BUY NO' ? 'BUY NO' : (r.action || 'HOLD');
+
+  const displayEdge = r.exec_edge != null ? execEdge : edge;
+  const edgePct = (displayEdge >= 0 ? '+' : '') + pct(displayEdge);
+  const edgeCls = displayEdge >= 0 ? 'pos' : 'neg';
+
+  const dateShort = (dateTag && dateTag !== '—') ? dateTag.slice(5) : '—';
+  const locShort  = locationTag.length > 14 ? locationTag.slice(0,13) + '…' : locationTag;
+
+  const linkBtn = r.url
+    ? `<a class="rc-link" href="${r.url}" target="_blank" rel="noopener" onclick="event.stopPropagation()" title="開啟 Polymarket">↗</a>`
+    : '<span class="rc-link" style="opacity:.2">·</span>';
+
+  // ── Details (expanded) ─────────────────────────────────────
+  const detailsInner = `
+    <div class="card-meta" style="margin-bottom:10px">
       ${r.conviction ? `<span class="tag ${convClass}">${convText}</span>` : ''}
-      <span class="tag">📍 ${locationTag}</span>
-      <span class="tag">📅 ${dateTag}</span>
       ${localTimeBadge}
-      ${hasSlippage ? `<span class="slippage-warn" title="$20 掃單 VWAP=${pct(r.exec_edge_vwap)} vs best_ask edge=${pct(r.exec_edge)}">⚠ 滑點 −${pct(vwapDelta)}</span>` : ''}
       ${stationBadge}
-      ${isTempBucket ? '<span class="tag" style="color:var(--green);border-color:rgba(0,201,141,.35)">✓ Real</span>' : isMock ? '<span class="tag" style="color:var(--yellow)">Demo</span>' : ''}
+      ${isTempBucket ? '<span class="tag" style="color:var(--green);border-color:rgba(0,255,136,.35)">✓ Real</span>' : isMock ? '<span class="tag" style="color:var(--yellow)">Demo</span>' : ''}
       ${wxIconLink}
     </div>
-  </div>
-
-  <div class="card-section prices">
-    <div class="price-bar">
-      <div class="price-col yes-col">
-        <span class="price-label">YES 市場</span>
-        <span class="price-num yes-col-val">${pct(mktYes)}</span>
-      </div>
-      <div class="price-col no-col">
-        <span class="price-label">NO 市場</span>
-        <span class="price-num no-col-val">${pct(mktNo)}</span>
-      </div>
-      <div class="price-col">
-        <span class="price-label">模型概率</span>
-        <span class="price-num ${modClass}">${modDisplay}</span>
-      </div>
-      <div class="price-col">
-        <span class="price-label">模型合意</span>
-        <span class="price-num ${agreeClass} agree-val">${cons.models_agree != null ? cons.models_agree + '/' + totalSources : '—'}</span>
-      </div>
+    <div class="price-bar" style="border:1px solid var(--border);margin-bottom:10px">
+      <div class="price-col yes-col"><span class="price-label">YES 市場</span><span class="price-num yes-col-val">${pct(mktYes)}</span></div>
+      <div class="price-col no-col"><span class="price-label">NO 市場</span><span class="price-num no-col-val">${pct(mktNo)}</span></div>
+      <div class="price-col"><span class="price-label">模型概率</span><span class="price-num ${modClass}">${modDisplay}</span></div>
+      <div class="price-col"><span class="price-label">模型合意</span><span class="price-num ${agreeClass} agree-val">${cons.models_agree != null ? cons.models_agree + '/' + totalSources : '—'}</span></div>
     </div>
-  </div>
-
-  ${hasDataSection ? `
-  <div class="card-section data">
     ${forecastLine}
     ${obsBox}
     ${wuBox}
     ${latencyWarn}
     ${hasConsensus ? `
-    <div class="consensus-row" style="margin-top:${forecastLine || obsBox || wuBox ? '10px' : '0'}">
+    <div class="consensus-row" style="margin-top:10px">
       ${modelBadge('GFS', gfs_p)}
       ${modelBadge('ECMWF', ecmwf_p)}
       ${modelBadge('ICON', icon_p)}
@@ -2142,10 +2226,23 @@ function buildCard(r, isOpp, rank) {
       <div class="spread-bar-track"><div class="spread-bar-fill" style="width:${spreadWidth}%"></div></div>
       <span>${spread < 0.10 ? '低' : spread < 0.20 ? '中' : '高'}</span>
     </div>` : ''}
-  </div>` : ''}
+    ${kellyLine ? `<div style="margin-top:10px;padding:8px 0;border-top:1px solid var(--border)">${kellyLine}</div>` : ''}
+  `;
 
-  ${kellyLine ? `<div class="card-section kelly-section">${kellyLine}</div>` : ''}
-</${tag}>`;
+  return `
+<div class="card row ${cardClass}${regimeCls}" onclick="toggleRow(this, event)">
+  <div class="rc-q">
+    ${rankIcon}<span>${r.question || '—'}</span>${tempInline}${regimeInline}${slipInline}
+  </div>
+  <div class="rc-loc">📍 ${locShort}</div>
+  <div class="rc-date">${dateShort}</div>
+  <div class="rc-action ${actionCls}">${actionShort}</div>
+  <div class="rc-num">${pct(mktYes)}<span class="rc-sub">YES</span></div>
+  <div class="rc-num">${modDisplay}<span class="rc-sub">MOD</span></div>
+  <div class="rc-edge ${edgeCls}">${edgePct}</div>
+  ${linkBtn}
+  <div class="rc-details" onclick="event.stopPropagation()">${detailsInner}</div>
+</div>`;
 }
 
 // ── History ────────────────────────────────────────────────
