@@ -793,6 +793,8 @@ main { display: grid; grid-template-columns: 1fr 290px; gap: 24px; padding: 24px
   font-weight: 500; color: var(--text);
 }
 .card.row .rc-q .rc-rank { color: var(--yellow); font-family: var(--mono); font-weight: 700; margin-right: 6px; font-size: 11px; }
+.rc-title-link { color: inherit; text-decoration: none; border-bottom: 1px dotted var(--border2); }
+.rc-title-link:hover { color: var(--green); border-bottom-color: var(--green); }
 .card.row .rc-q .rc-tempdisplay { color: var(--blue); font-family: var(--mono); font-size: 11px; margin-left: 6px; }
 .card.row .rc-q .rc-badge {
   display: inline-block; margin-left: 6px; padding: 1px 5px;
@@ -2291,7 +2293,7 @@ function buildCard(r, isOpp, rank) {
   // ── Details (expanded) ─────────────────────────────────────
   const detailsInner = `
     <div style="font-size:13px;font-weight:600;color:var(--text);line-height:1.5;margin-bottom:10px;padding-right:20px">
-      ${r.question || '—'}
+      ${r.url ? `<a href="${r.url}" target="_blank" rel="noopener" onclick="event.stopPropagation()" class="rc-title-link">${r.question || '—'}</a>` : (r.question || '—')}
     </div>
     <div class="card-meta" style="margin-bottom:10px">
       ${r.conviction ? `<span class="tag ${convClass}">${convText}</span>` : ''}
@@ -2330,7 +2332,7 @@ function buildCard(r, isOpp, rank) {
   return `
 <div class="card row expanded ${cardClass}${regimeCls}">
   <div class="rc-q">
-    ${rankIcon}<span>${r.question || '—'}</span>${tempInline}${regimeInline}${slipInline}
+    ${rankIcon}${r.url ? `<a href="${r.url}" target="_blank" rel="noopener" onclick="event.stopPropagation()" class="rc-title-link">${r.question || '—'}</a>` : `<span>${r.question || '—'}</span>`}${tempInline}${regimeInline}${slipInline}
   </div>
   <div class="rc-loc">📍 ${locShort}</div>
   <div class="rc-date">${dateShort}</div>
@@ -2390,7 +2392,7 @@ function buildHistoryRow(r) {
     : '<span class="rc-link" style="opacity:.2">·</span>';
   return `
 <div class="card row">
-  <div class="rc-q">${verdictBadge} <span>${r.question || loc}</span>${tempInline}</div>
+  <div class="rc-q">${verdictBadge} ${r.market_url ? `<a href="${r.market_url}" target="_blank" rel="noopener" class="rc-title-link">${r.question || loc}</a>` : `<span>${r.question || loc}</span>`}${tempInline}</div>
   <div class="rc-loc">📍 ${locShort}</div>
   <div class="rc-date">${dateShort}</div>
   <div class="rc-action ${actionCls}">${action}</div>
