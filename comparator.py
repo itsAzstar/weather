@@ -24,6 +24,10 @@ from fetcher_polymarket import fetch_clob_book, sweep_book as _sweep_book
 
 MAX_DAYS_AHEAD = 10       # Only consider markets resolving within this window
 EDGE_THRESHOLD = 0.08     # 8% minimum divergence to flag as opportunity (5% had too much noise)
+# Asymmetric: historical BUY YES win rate 18% vs BUY NO 66% (2026-04 sample, n=97).
+# Model overconfident on YES side (temp thresholds usually unreachable), so require larger edge.
+EDGE_THRESHOLD_YES = 0.15
+EDGE_THRESHOLD_NO  = EDGE_THRESHOLD
 
 # ── Latency arbitrage zone ────────────────────────────────────────────────────
 # Markets within this many hours of resolution are dominated by HFT bots
@@ -1006,7 +1010,8 @@ async def compare_market(market: dict) -> Optional[dict]:
                 "wu_definitive": wu_definitive,
             }
         # is_opportunity: based on EXECUTABLE edge (VWAP-adjusted), not paper edge
-        is_opp = exec_edge > EDGE_THRESHOLD if raw_edge > 0 else (-exec_edge) > EDGE_THRESHOLD
+        # Asymmetric threshold: BUY YES needs more edge than BUY NO (see EDGE_THRESHOLD_YES).
+        is_opp = exec_edge > EDGE_THRESHOLD_YES if raw_edge > 0 else (-exec_edge) > EDGE_THRESHOLD_NO
         action = ("BUY YES" if raw_edge > 0 else "BUY NO") if is_opp else "HOLD"
 
         # ── Latency arb zone warning ───────────────────────────────────────────
@@ -1108,8 +1113,8 @@ async def compare_market(market: dict) -> Optional[dict]:
         half_spread = _estimate_half_spread(market_price_yes, days_ahead)
         exec_edge   = raw_edge - half_spread if raw_edge > 0 else raw_edge + half_spread
 
-    is_opportunity = (exec_edge > EDGE_THRESHOLD if raw_edge > 0
-                      else -exec_edge > EDGE_THRESHOLD)
+    is_opportunity = (exec_edge > EDGE_THRESHOLD_YES if raw_edge > 0
+                      else -exec_edge > EDGE_THRESHOLD_NO)
 
     if not is_opportunity:
         action = "SKIP"
@@ -1217,7 +1222,8 @@ async def compare_all_markets(markets: list[dict]) -> list[dict]:
                     new_edge = r["model_probability"] - mp
                     r["edge"] = round(new_edge, 4)
                     r["abs_edge"] = round(abs(new_edge), 4)
-                    if abs(new_edge) >= EDGE_THRESHOLD and mp not in (0.0, 1.0):
+                    thr = EDGE_THRESHOLD_YES if new_edge > 0 else EDGE_THRESHOLD_NO
+                    if abs(new_edge) >= thr and mp not in (0.0, 1.0):
                         r["is_opportunity"] = True
                         r["action"] = "BUY YES" if new_edge > 0 else "BUY NO"
                     else:
