@@ -181,6 +181,39 @@ async def _run_scan() -> list[dict]:
                     r["conviction"]     = cons.get("conviction")
                     r["models_agree"]   = cons.get("models_agree", 0)
 
+                    # ── Bleed-stop patch (2026-04-18) ─────────────────────────
+                    # Brier telemetry shows nowcast-adjusted model_probability
+                    # (Kalman + METAR + WU override layer in comparator) scores
+                    # WORSE than the pure 5-model consensus:
+                    #   2-day: model_brier=0.368 vs consensus_brier=0.237
+                    # The nowcast adjustment is actively degrading calibration,
+                    # so override model_probability with consensus_prob and
+                    # re-derive edge/action. Preserves wu_definitive overrides
+                    # from comparator (those are physical certainties, not
+                    # Kalman guesses) by only replacing values in the normal
+                    # range — not the 0.01 death signal.
+                    cp = cons.get("consensus")
+                    mp_old = r.get("model_probability")
+                    mkt_px = r.get("market_price_yes")
+                    if (cp is not None and mp_old is not None
+                            and mp_old > 0.015  # preserve wu_definitive=dead override (0.01)
+                            and mkt_px is not None):
+                        try:
+                            mkt_px_f = float(mkt_px)
+                            r["model_probability"] = cp
+                            raw_edge = cp - mkt_px_f
+                            r["edge"] = round(raw_edge, 4)
+                            r["abs_edge"] = abs(round(raw_edge, 4))
+                            if abs(raw_edge) >= 0.08:
+                                r["action"] = "BUY YES" if raw_edge > 0 else "BUY NO"
+                                r["is_opportunity"] = True
+                            else:
+                                r["action"] = "HOLD"
+                                r["is_opportunity"] = False
+                            r["model_prob_source"] = "consensus_override"
+                        except (ValueError, TypeError):
+                            pass
+
                     # Kelly 建議注額：使用已扣除 Spread 的 exec_edge（在 comparator 計算）
                     # exec_edge = paper_edge - bid/ask half-spread (dynamic, by price level)
                     exec_edge = abs(r.get("exec_edge") or r.get("edge") or 0)
