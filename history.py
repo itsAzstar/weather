@@ -96,6 +96,12 @@ def init_db():
             # Previous SELECT-then-INSERT dedup was racy: concurrent _enrich_one
             # workers all saw "no existing" and all INSERTed → 100× duplicates.
             ("predicted_date",  "TEXT"),
+            # Which layer produced `model_prob`:
+            #   "nowcast"             — comparator's Kalman/METAR/WU adjustment (pre-2026-04-18)
+            #   "consensus_override"  — bleed-stop patch in server._enrich_one overrode with consensus_prob
+            #   "wu_definitive"       — WU daily high outside bucket → model_prob forced to 0.01
+            # Needed to measure whether the 2026-04-18 bleed-stop actually improved Brier.
+            ("model_prob_source", "TEXT"),
         ]:
             try:
                 conn.execute(f"ALTER TABLE predictions ADD COLUMN {col} {coltype}")
@@ -159,8 +165,9 @@ def log_prediction(result: dict):
                  market_price, model_prob, consensus_prob, conviction, models_agree,
                  edge, action, predicted_at, predicted_date,
                  temp_bucket_json, market_url, market_subtype, temp_display,
-                 days_ahead, obs_adjusted, time_remaining_hours, in_latency_arb_zone)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 days_ahead, obs_adjusted, time_remaining_hours, in_latency_arb_zone,
+                 model_prob_source)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             condition_id,
             result.get("question", ""),
@@ -184,6 +191,7 @@ def log_prediction(result: dict):
             1 if obs_adjusted else (0 if obs_adjusted is False else None),
             float(time_remaining_hours) if isinstance(time_remaining_hours, (int, float)) else None,
             1 if in_latency else (0 if in_latency is False else None),
+            result.get("model_prob_source"),
         ))
 
 
@@ -229,7 +237,7 @@ def get_brier_score(days: int = 30) -> Optional[dict]:
     with _connect() as conn:
         rows = conn.execute("""
             SELECT model_prob, consensus_prob, outcome,
-                   days_ahead, obs_adjusted
+                   days_ahead, obs_adjusted, model_prob_source
             FROM predictions
             WHERE outcome IS NOT NULL AND predicted_at >= ?
         """, (since,)).fetchall()
@@ -292,6 +300,15 @@ def get_brier_score(days: int = 30) -> Optional[dict]:
             "near_term":     _group(near),     # days_ahead == 1, no obs
             "nowcast":       _group(nowcast),  # obs_adjusted (可能洩漏)
             "unknown":       _group(unknown),  # migration 前的老資料
+        },
+        # 2026-04-18 bleed-stop A/B: model_prob 來源分組。
+        # 比較 nowcast (舊 Kalman/METAR 加工) vs consensus_override (純 5 模型)
+        # 部署 24-48h 後若 consensus_override 的 Brier 明顯低 → 證明 override 有效。
+        "by_source": {
+            "nowcast":            _group([r for r in rows if r["model_prob_source"] == "nowcast"]),
+            "consensus_override": _group([r for r in rows if r["model_prob_source"] == "consensus_override"]),
+            "wu_definitive":      _group([r for r in rows if r["model_prob_source"] == "wu_definitive"]),
+            "legacy_null":        _group([r for r in rows if r["model_prob_source"] is None]),
         },
         "leakage_warning": leakage_warning,
         # 解讀：< 0.10 優秀，< 0.20 良好，> 0.25 = 比隨機還差

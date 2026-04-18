@@ -904,6 +904,7 @@ async def compare_market(market: dict) -> Optional[dict]:
         # rise above hi_c before resolution, so tail risk must remain in prob.
         if wu_definitive and wu_definitive_result == "dead":
             model_prob = 0.01  # effectively zero; tiny non-zero for display
+            market["model_prob_source"] = "wu_definitive"
 
         # ── Market certainty guard ─────────────────────────────────────────
         # When the market has already priced certainty (YES>90% or NO>90%),

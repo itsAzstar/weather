@@ -195,8 +195,12 @@ async def _run_scan() -> list[dict]:
                     cp = cons.get("consensus")
                     mp_old = r.get("model_probability")
                     mkt_px = r.get("market_price_yes")
+                    # Default source tag = "nowcast" (comparator path) unless
+                    # upstream already tagged wu_definitive.
+                    if not r.get("model_prob_source"):
+                        r["model_prob_source"] = "nowcast"
                     if (cp is not None and mp_old is not None
-                            and mp_old > 0.015  # preserve wu_definitive=dead override (0.01)
+                            and r.get("model_prob_source") != "wu_definitive"
                             and mkt_px is not None):
                         try:
                             mkt_px_f = float(mkt_px)
