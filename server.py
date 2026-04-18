@@ -175,6 +175,7 @@ async def _run_scan() -> list[dict]:
                         event_type=event_type_cons,
                         threshold=threshold_cons,
                         direction=parsed.get("direction", "any"),
+                        days_ahead=r.get("days_ahead"),
                     )
                     r["consensus"]      = cons
                     r["consensus_prob"] = cons.get("consensus")

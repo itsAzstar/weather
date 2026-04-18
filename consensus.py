@@ -113,10 +113,37 @@ def _rain_prob_from_day(day: dict) -> float:
     return 0.10
 
 
-def _temp_exceed_prob(day: dict, thresh_c: float) -> float:
+def _sigma_for_days_ahead(days_ahead: Optional[int]) -> float:
     """
-    P(daily_max >= thresh_c) via normal CDF with sigma = 2.5 °C
-    (matches comparator's daily-max RMSE assumption for GFS).
+    GFS daily-max temperature RMSE scales with forecast lead time.
+    Empirical (NOAA verification stats, 2m temp daily max):
+        day 0 (today, 00Z run):   ~1.0 °C
+        day 1:                    ~1.5 °C
+        day 2:                    ~2.0 °C
+        day 3+:                   ~2.5 °C
+
+    Using a fixed sigma=2.5 for 1°C-wide buckets mathematically caps peak
+    P(YES) at ~16% regardless of forecast accuracy — which was the root
+    cause of systematic BUY NO losses on narrow-bucket markets (the
+    2026-04-18 Brier investigation traced 28.9% win rate to this).
+
+    Linear scale: sigma = max(0.8, 0.6 * days_ahead + 0.8)
+        day 0: 0.8 → 1° bucket peak ~47%
+        day 1: 1.4 → peak ~28%
+        day 2: 2.0 → peak ~20%
+        day 3: 2.6 → peak ~15%
+    Floor 0.8 °C to prevent overconfidence when model is effectively
+    observing live temperature and sigma → 0.
+    """
+    if days_ahead is None or days_ahead < 0:
+        return 2.5  # fallback: old behaviour for safety
+    return max(0.8, 0.6 * days_ahead + 0.8)
+
+
+def _temp_exceed_prob(day: dict, thresh_c: float, days_ahead: Optional[int] = None) -> float:
+    """
+    P(daily_max >= thresh_c) via normal CDF with sigma scaled by forecast
+    lead time (see _sigma_for_days_ahead).
 
     Previous step function (0.85/0.55/0.35/0.15/0.05) produced systematic
     miscalibration: every forecast that beat the threshold was clipped to
@@ -129,7 +156,7 @@ def _temp_exceed_prob(day: dict, thresh_c: float) -> float:
     if t_max is None:
         return 0.5
     import math
-    sigma = 2.5
+    sigma = _sigma_for_days_ahead(days_ahead)
     z = (t_max - thresh_c) / sigma
     p = 0.5 * (1.0 + math.erf(z / math.sqrt(2)))
     return max(0.02, min(0.98, round(p, 3)))
@@ -153,7 +180,8 @@ def _wind_exceed_prob(day: dict, thresh_kph: float) -> float:
     return max(0.02, min(0.98, round(p, 3)))
 
 
-def _model_prob_from_day(day: dict, event_type: str, threshold: Optional[dict], direction: str) -> Optional[float]:
+def _model_prob_from_day(day: dict, event_type: str, threshold: Optional[dict], direction: str,
+                         days_ahead: Optional[int] = None) -> Optional[float]:
     """從單一模型的 daily 數據計算 YES 概率。"""
     if day is None:
         return None
@@ -196,6 +224,7 @@ def _model_prob_from_day(day: dict, event_type: str, threshold: Optional[dict], 
                 day, "temperature_bucket",
                 {"lo_c": lo_c, "hi_c": hi_c},
                 direction,
+                days_ahead=days_ahead,
             )
 
         thresh_c = None
@@ -205,7 +234,7 @@ def _model_prob_from_day(day: dict, event_type: str, threshold: Optional[dict], 
             thresh_c = (threshold["value_f"] - 32) * 5 / 9
         if thresh_c is None:
             return None
-        prob = _temp_exceed_prob(day, thresh_c)
+        prob = _temp_exceed_prob(day, thresh_c, days_ahead=days_ahead)
         if direction == "below":
             prob = 1.0 - prob
         return round(prob, 3)
@@ -234,7 +263,9 @@ def _model_prob_from_day(day: dict, event_type: str, threshold: Optional[dict], 
         t_max = day.get("temp_max_c")
         if t_max is None or (lo_c is None and hi_c is None):
             return None
-        sigma = 2.5   # realistic GFS daily-max RMSE
+        # Sigma scales with forecast lead time so narrow 1°C buckets aren't
+        # mathematically capped at ~16% peak probability. See _sigma_for_days_ahead.
+        sigma = _sigma_for_days_ahead(days_ahead)
         lo_cdf = _ncdf((lo_c - t_max) / sigma) if lo_c is not None else 0.0
         hi_cdf = _ncdf((hi_c - t_max) / sigma) if hi_c is not None else 1.0
         return max(0.01, min(0.99, round(hi_cdf - lo_cdf, 3)))
@@ -313,6 +344,7 @@ def get_consensus(
     event_type: str,
     threshold: Optional[dict],
     direction: str = "any",
+    days_ahead: Optional[int] = None,
 ) -> dict:
     """
     五模型各自查詢，回傳共識結果：
@@ -337,11 +369,11 @@ def get_consensus(
     nws_day   = model_data["nws_day"]
     metno_day = model_data["metno_day"]
 
-    gfs_p   = _model_prob_from_day(gfs_day,   event_type, threshold, direction)
-    ecmwf_p = _model_prob_from_day(ecmwf_day, event_type, threshold, direction)
-    icon_p  = _model_prob_from_day(icon_day,  event_type, threshold, direction)
-    nws_p   = _model_prob_from_day(nws_day,   event_type, threshold, direction)
-    metno_p = _model_prob_from_day(metno_day, event_type, threshold, direction)
+    gfs_p   = _model_prob_from_day(gfs_day,   event_type, threshold, direction, days_ahead=days_ahead)
+    ecmwf_p = _model_prob_from_day(ecmwf_day, event_type, threshold, direction, days_ahead=days_ahead)
+    icon_p  = _model_prob_from_day(icon_day,  event_type, threshold, direction, days_ahead=days_ahead)
+    nws_p   = _model_prob_from_day(nws_day,   event_type, threshold, direction, days_ahead=days_ahead)
+    metno_p = _model_prob_from_day(metno_day, event_type, threshold, direction, days_ahead=days_ahead)
 
     # Build sources list
     source_map = [
