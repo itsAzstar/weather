@@ -850,6 +850,18 @@ main { display: grid; grid-template-columns: 1fr 290px; gap: 24px; padding: 24px
 }
 .row-header-strip > div:nth-child(n+3) { text-align: right; }
 .row-header-strip > div:nth-child(4)   { text-align: center; }
+.hdr-cell {
+  cursor: pointer;
+  user-select: none;
+  transition: color .1s;
+  display: flex; align-items: center; gap: 4px;
+}
+.row-header-strip > .hdr-cell:nth-child(n+3) { justify-content: flex-end; }
+.row-header-strip > .hdr-cell:nth-child(4)   { justify-content: center; }
+.hdr-cell:hover { color: var(--text); }
+.hdr-cell.active { color: var(--green); }
+.hdr-arrow { font-size: 8px; opacity: .55; }
+.hdr-cell.active .hdr-arrow { opacity: 1; }
 
 /* ── Obs Box (current station observation) ───────────────── */
 .obs-box {
@@ -923,16 +935,7 @@ main { display: grid; grid-template-columns: 1fr 290px; gap: 24px; padding: 24px
     <div id="region-filter-bar"></div>
     <!-- Risk filter tabs -->
     <div id="risk-filter-bar"></div>
-    <div class="row-header-strip">
-      <div>MARKET</div>
-      <div>LOCATION</div>
-      <div>DATE</div>
-      <div>ACTION</div>
-      <div>YES</div>
-      <div>MOD</div>
-      <div>EDGE</div>
-      <div></div>
-    </div>
+    <div id="row-header-strip" class="row-header-strip"></div>
     <div id="opportunities-list"><div class="skeleton"></div><div class="skeleton"></div></div>
 
     <div id="no-edge-wrap" style="margin-top:16px">
@@ -1154,11 +1157,70 @@ const _state = {
   dateFilter:   'all',   // 'all' | ISO date | 'soon-2h' | 'soon-6h' | 'soon-today'
   regionFilter: 'all',   // 'all' | 'asia' | 'europe' | 'na' | 'sa' | 'mea' | 'aus'
   riskFilter:   'all',   // 'all' | 'slippage' | 'regime' | 'high-kelly'
+  sortBy:       null,    // null | 'q' | 'loc' | 'date' | 'action' | 'yes' | 'mod' | 'edge'
+  sortDir:      'desc',  // 'desc' | 'asc'
 };
 
 function setFilter(key, val) {
   _state[key] = val;
   renderAll();
+}
+
+function setSort(col) {
+  if (_state.sortBy === col) {
+    _state.sortDir = (_state.sortDir === 'desc') ? 'asc' : 'desc';
+  } else {
+    _state.sortBy = col;
+    _state.sortDir = 'desc';
+  }
+  renderAll();
+}
+
+function _sortKey(r, col) {
+  switch (col) {
+    case 'q':      return (r.question || '').toLowerCase();
+    case 'loc':    return (r.location_hint || r.parsed?.location || '').toLowerCase();
+    case 'date':   return r.parsed?.target_date || (r.end_date ? r.end_date.slice(0,10) : '');
+    case 'action': return r.action === 'BUY YES' ? 2 : r.action === 'BUY NO' ? 1 : 0;
+    case 'yes':    return r.market_price_yes != null ? r.market_price_yes : -1;
+    case 'mod':    return r.model_probability  != null ? r.model_probability : -1;
+    case 'edge':   return r.exec_edge != null ? r.exec_edge : (r.edge != null ? r.edge : -999);
+    default:       return 0;
+  }
+}
+
+const _SORT_COLS = [
+  { key: 'q',      label: '市場' },
+  { key: 'loc',    label: '地點' },
+  { key: 'date',   label: '日期' },
+  { key: 'action', label: '操作' },
+  { key: 'yes',    label: 'YES' },
+  { key: 'mod',    label: '模型' },
+  { key: 'edge',   label: '套利' },
+];
+
+function _renderHeaderStrip() {
+  const el = document.getElementById('row-header-strip');
+  if (!el) return;
+  const cells = _SORT_COLS.map(c => {
+    const active = _state.sortBy === c.key;
+    const arrow  = active ? (_state.sortDir === 'desc' ? '▼' : '▲') : '⇅';
+    const cls    = active ? 'hdr-cell active' : 'hdr-cell';
+    return `<div class="${cls}" onclick="setSort('${c.key}')">${c.label}<span class="hdr-arrow">${arrow}</span></div>`;
+  }).join('');
+  el.innerHTML = cells + '<div></div>';
+}
+
+function _applySort(list) {
+  if (!_state.sortBy) return list;
+  const col = _state.sortBy;
+  const dir = _state.sortDir === 'desc' ? -1 : 1;
+  return [...list].sort((a, b) => {
+    const av = _sortKey(a, col), bv = _sortKey(b, col);
+    if (av < bv) return -1 * dir;
+    if (av > bv) return  1 * dir;
+    return 0;
+  });
 }
 
 // ── Risk filter predicates ─────────────────────────────────
@@ -1499,9 +1561,17 @@ function renderFilterBars() {
 
 function renderCards() {
   const { dateFilter, regionFilter, riskFilter } = _state;
-  const filteredOpps   = _filterAll(_allOpportunities, dateFilter, riskFilter, regionFilter);
-  const filteredNoEdge = _filterAll(_allNoEdge,        dateFilter, riskFilter, regionFilter);
+  let filteredOpps   = _filterAll(_allOpportunities, dateFilter, riskFilter, regionFilter);
+  let filteredNoEdge = _filterAll(_allNoEdge,        dateFilter, riskFilter, regionFilter);
   const isSoon = dateFilter.startsWith('soon-');
+
+  // Apply user sort (overrides default ordering except soon-time)
+  if (_state.sortBy && !isSoon) {
+    filteredOpps   = _applySort(filteredOpps);
+    filteredNoEdge = _applySort(filteredNoEdge);
+  }
+
+  _renderHeaderStrip();
 
   // ── Opportunities ──
   const oppList = document.getElementById('opportunities-list');
@@ -1512,9 +1582,12 @@ function renderCards() {
       : (noEdgeCount > 0 ? `找到 ${noEdgeCount} 個市場，但 Edge < 8%，往下查看 ↓` : '此篩選條件無可評估的市場');
     oppList.innerHTML = `<div class="empty"><div class="empty-icon">📊</div><div>無超過 8% Edge 的機會</div>
       <div style="margin-top:8px;font-size:12px;color:var(--yellow)">${hint}</div></div>`;
-  } else if (dateFilter === 'all') {
+  } else if (dateFilter === 'all' && !_state.sortBy) {
     // Group by date headers + portfolio groups within each date
     oppList.innerHTML = _renderAllGrouped(filteredOpps, filteredNoEdge);
+  } else if (_state.sortBy) {
+    // Sorted: flat list, no grouping
+    oppList.innerHTML = filteredOpps.map(r => buildCard(r, true, null)).join('');
   } else {
     const soonHeader = isSoon ? `<div class="soon-divider">⚡ 即將截止 — 按剩餘時間排序</div>` : '';
     oppList.innerHTML = soonHeader + _renderOppList(filteredOpps, isSoon);
@@ -2195,6 +2268,9 @@ function buildCard(r, isOpp, rank) {
 
   // ── Details (expanded) ─────────────────────────────────────
   const detailsInner = `
+    <div style="font-size:13px;font-weight:600;color:var(--text);line-height:1.5;margin-bottom:10px;padding-right:20px">
+      ${r.question || '—'}
+    </div>
     <div class="card-meta" style="margin-bottom:10px">
       ${r.conviction ? `<span class="tag ${convClass}">${convText}</span>` : ''}
       ${localTimeBadge}
