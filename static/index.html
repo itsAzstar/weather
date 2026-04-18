@@ -780,11 +780,10 @@ main { display: grid; grid-template-columns: 1fr 290px; gap: 24px; padding: 24px
   border: 1px solid var(--border);
   background: var(--card);
   border-radius: 0;
-  cursor: pointer;
   font-size: 12px;
-  transition: background .1s, border-color .1s;
+  transition: border-color .1s;
 }
-.card.row:hover { background: #1a1a1a; border-color: var(--border2); }
+.card.row:hover { border-color: var(--border2); }
 .card.row.opportunity { border-left: 3px solid var(--green); padding-left: 13px; }
 .card.row.no-edge { opacity: .6; }
 .card.row.no-edge:hover { opacity: .9; }
@@ -836,7 +835,7 @@ main { display: grid; grid-template-columns: 1fr 290px; gap: 24px; padding: 24px
   cursor: default;
 }
 .card.row.expanded .rc-details { display: block; }
-.card.row.expanded { background: #141414; }
+.card.row.expanded { margin-bottom: 8px; }
 .row-header-strip {
   display: grid;
   grid-template-columns: 1fr 120px 64px 80px 62px 62px 76px 30px;
@@ -862,6 +861,49 @@ main { display: grid; grid-template-columns: 1fr 290px; gap: 24px; padding: 24px
 .hdr-cell.active { color: var(--green); }
 .hdr-arrow { font-size: 8px; opacity: .55; }
 .hdr-cell.active .hdr-arrow { opacity: 1; }
+
+/* ── Mobile (phone) — tighten, hide less-critical columns ─── */
+@media (max-width: 720px) {
+  body { font-size: 13px; }
+  header { padding: 10px 14px; }
+  .logo { font-size: 11px; letter-spacing: 1.2px; }
+  #refresh-btn { font-size: 10px; padding: 5px 12px; letter-spacing: .5px; }
+  #model-bar, #stats-ribbon { padding-left: 14px; padding-right: 14px; }
+  .ribbon-chip { padding: 10px 12px; min-width: 70px; }
+  .ribbon-chip .rc-val { font-size: 17px; }
+  main { padding: 14px 10px !important; }
+  .card.row {
+    grid-template-columns: 1fr 60px 54px 60px 28px;
+    gap: 8px;
+    padding: 10px 10px;
+    font-size: 12px;
+  }
+  .card.row.opportunity { padding-left: 7px; }
+  .card.row.regime-shift { padding-left: 7px; }
+  .card.row .rc-loc,
+  .card.row .rc-date,
+  .card.row .rc-num:nth-of-type(2) { display: none; }  /* hide loc, date, mod */
+  .row-header-strip {
+    grid-template-columns: 1fr 60px 54px 60px 28px;
+    gap: 8px;
+    padding: 6px 10px;
+    top: 46px;
+  }
+  /* Hide LOC (2nd), DATE (3rd), MOD (6th) cells on mobile */
+  .row-header-strip > div:nth-child(2),
+  .row-header-strip > div:nth-child(3),
+  .row-header-strip > div:nth-child(6) { display: none; }
+  .card.row .rc-edge { font-size: 13px; }
+  .card.row .rc-action { font-size: 9px; }
+  .card.row .rc-q { font-size: 12px; }
+  .card.row .rc-q .rc-tempdisplay { display: block; margin-left: 0; margin-top: 2px; font-size: 10px; }
+  /* Filter tabs wrap nicer on phone */
+  .date-tab, .region-tab, .risk-tab { font-size: 10px; padding: 3px 8px; }
+  .section-title { font-size: 9px; }
+  #history-rate-strip { gap: 8px; }
+  .history-stat-pill { padding: 8px 14px; min-width: 80px; }
+  .history-stat-pill .pill-num { font-size: 22px; }
+}
 
 /* ── Obs Box (current station observation) ───────────────── */
 .obs-box {
@@ -1089,12 +1131,12 @@ main { display: grid; grid-template-columns: 1fr 290px; gap: 24px; padding: 24px
 <!-- ── History Section (full-width below main) ── -->
 <div style="padding: 0 24px 40px">
   <button class="section-toggle" onclick="toggleHistory()" id="history-toggle-btn">
-    <span id="history-arrow">▾</span> 預判歷史紀錄 — 正確 / 失敗 / 待結算
+    <span id="history-arrow">▾</span> 預判歷史紀錄 — 正確 / 失敗
     <span id="history-badge-counts" style="float:right;font-weight:400;color:var(--dim)"></span>
   </button>
   <div id="history-panel" style="display:block">
 
-    <!-- Stats strip -->
+    <!-- Stats strip (correct / wrong only) -->
     <div class="history-rate-strip" id="history-rate-strip">
       <div class="history-stat-pill correct">
         <span class="pill-num" id="hst-correct-n">—</span>
@@ -1106,40 +1148,20 @@ main { display: grid; grid-template-columns: 1fr 290px; gap: 24px; padding: 24px
         <span class="pill-pct" id="hst-wrong-pct">—</span>
         <span class="pill-lbl">❌ 失敗預判</span>
       </div>
-      <div class="history-stat-pill pending">
-        <span class="pill-num" id="hst-pending-n">—</span>
-        <span class="pill-pct" style="color:var(--dim);font-size:11px" id="hst-pending-lbl">待結算</span>
-        <span class="pill-lbl">⏳ 尚未結算</span>
-      </div>
-      <div style="margin-left:auto;font-size:11px;color:var(--dim);align-self:center">
-        成功率計算：已結算市場中，BUY YES 且結算 YES，或 BUY NO 且結算 NO → 正確
-      </div>
     </div>
 
-    <!-- 3-column list -->
-    <div class="history-cols">
-      <div>
-        <div class="history-col-title correct">✅ 正確 (<span id="hist-correct-count">0</span>)</div>
-        <div class="history-col-body correct" id="hist-correct-list">
-          <div class="history-empty">載入中…</div>
-        </div>
-      </div>
-      <div>
-        <div class="history-col-title wrong">❌ 失敗 (<span id="hist-wrong-count">0</span>)</div>
-        <div class="history-col-body wrong" id="hist-wrong-list">
-          <div class="history-empty">載入中…</div>
-        </div>
-      </div>
-      <div>
-        <div class="history-col-title pending">⏳ 待結算 (<span id="hist-pending-count">0</span>)</div>
-        <div class="history-col-body pending" id="hist-pending-list">
-          <div class="history-empty">載入中…</div>
-        </div>
-      </div>
+    <!-- Tabs: correct / wrong -->
+    <div id="history-tab-bar" style="display:flex;gap:6px;margin:14px 0 8px">
+      <button class="risk-tab active-opp" id="htab-correct" onclick="setHistTab('correct')">✅ 正確 <span class="tab-count" id="htab-correct-n">0</span></button>
+      <button class="risk-tab" id="htab-wrong" onclick="setHistTab('wrong')">❌ 失敗 <span class="tab-count" id="htab-wrong-n">0</span></button>
     </div>
+
+    <!-- Row header (matches opportunities) -->
+    <div id="hist-header-strip" class="row-header-strip" style="position:static"></div>
+    <div id="hist-list"><div class="history-empty" style="padding:24px 12px;color:var(--dim2)">載入中…</div></div>
 
     <div style="margin-top:8px;font-size:11px;color:var(--dim)">
-      顯示過去 90 天記錄（最多 300 筆）。市場結算日過後自動從 Open-Meteo 歷史資料比對結果。
+      顯示過去 90 天記錄（最多 300 筆）。結算來源：Polymarket CLOB + Open-Meteo 歷史資料。
     </div>
   </div>
 </div>
@@ -1969,8 +1991,8 @@ function getCityLocalTime(city) {
 
 // ── Card Builder ───────────────────────────────────────────
 function toggleRow(el, ev) {
-  if (ev && ev.target && (ev.target.closest('.rc-link') || ev.target.closest('a') || ev.target.closest('.rc-details'))) return;
-  el.classList.toggle('expanded');
+  // Auto-expand mode: rows stay open; no toggle behavior.
+  return;
 }
 
 function buildCard(r, isOpp, rank) {
@@ -2306,7 +2328,7 @@ function buildCard(r, isOpp, rank) {
   `;
 
   return `
-<div class="card row ${cardClass}${regimeCls}" onclick="toggleRow(this, event)">
+<div class="card row expanded ${cardClass}${regimeCls}">
   <div class="rc-q">
     ${rankIcon}<span>${r.question || '—'}</span>${tempInline}${regimeInline}${slipInline}
   </div>
@@ -2339,43 +2361,81 @@ function _initHistory() {
 }
 
 function buildHistoryRow(r) {
-  const edge      = r.edge;
-  const edgeSign  = edge != null ? (edge >= 0 ? '+' : '') : '';
-  const edgeStr   = edge != null ? `${edgeSign}${(edge * 100).toFixed(1)}%` : '—';
-  const edgeClass = edge != null ? (edge >= 0 ? 'pos' : 'neg') : '';
-  const dateStr   = (r.target_date || '').slice(0, 10);
-  const action    = r.action || '—';
-  const actionCls = action === 'BUY YES' ? 'hist-action-buy' : action === 'BUY NO' ? 'hist-action-sell' : '';
-  const mktPct    = r.market_price != null ? (r.market_price * 100).toFixed(0) + '%' : '—';
-  const modPct    = (r.consensus_prob ?? r.model_prob) != null
-                    ? ((r.consensus_prob ?? r.model_prob) * 100).toFixed(0) + '%' : '—';
-  const tempTag   = r.temp_display ? `<span>🌡 ${r.temp_display}</span>` : '';
-  const convTag   = r.conviction ? `<span>${{high:'★★★',medium:'★★',low:'★'}[r.conviction]||''} ${r.conviction}</span>` : '';
-  const resolvedStr = r.resolved_at ? '結算 ' + new Date(r.resolved_at).toLocaleDateString('zh-TW') : '';
-  const link      = r.market_url ? `href="${r.market_url}" target="_blank" rel="noopener"` : '';
-  const tag       = r.market_url ? 'a' : 'div';
-
+  const edge       = r.edge;
+  const edgePct    = edge != null ? ((edge >= 0 ? '+' : '') + (edge * 100).toFixed(1) + '%') : '—';
+  const edgeCls    = edge != null ? (edge >= 0 ? 'pos' : 'neg') : '';
+  const dateShort  = (r.target_date || '').slice(5, 10) || '—';
+  const action     = r.action || '—';
+  const actionCls  = action === 'BUY YES' ? 'buy' : action === 'BUY NO' ? 'sell' : 'hold';
+  const mktPct     = r.market_price != null ? (r.market_price * 100).toFixed(0) + '%' : '—';
+  const modRaw     = r.consensus_prob ?? r.model_prob;
+  const modPct     = modRaw != null ? (modRaw * 100).toFixed(0) + '%' : '—';
+  const loc        = r.location || '—';
+  const locShort   = loc.length > 14 ? loc.slice(0, 13) + '…' : loc;
+  const tempInline = r.temp_display ? `<span class="rc-tempdisplay">🌡${r.temp_display}</span>` : '';
+  const verdict    = r.verdict;
+  const verdictBadge = verdict === 'correct'
+    ? '<span class="rc-badge" style="color:var(--green)">✓W</span>'
+    : verdict === 'wrong'
+    ? '<span class="rc-badge" style="color:var(--red)">✗L</span>'
+    : '';
+  const linkBtn    = r.market_url
+    ? `<a class="rc-link" href="${r.market_url}" target="_blank" rel="noopener" title="開啟 Polymarket">↗</a>`
+    : '<span class="rc-link" style="opacity:.2">·</span>';
   return `
-<${tag} class="history-row" ${link}>
-  <div class="history-row-q">${r.question || r.location || '—'}</div>
-  <div class="history-row-meta">
-    <span class="${actionCls}">${action}</span>
-    <span class="history-row-edge ${edgeClass}">Edge ${edgeStr}</span>
-    <span>市場 ${mktPct} → 模型 ${modPct}</span>
-    ${tempTag}
-    ${r.location ? `<span>📍 ${r.location}</span>` : ''}
-    <span>📅 ${dateStr}</span>
-    ${convTag}
-    ${resolvedStr ? `<span style="color:var(--green)">${resolvedStr}</span>` : ''}
-  </div>
-</${tag}>`;
+<div class="card row">
+  <div class="rc-q">${verdictBadge} <span>${r.question || loc}</span>${tempInline}</div>
+  <div class="rc-loc">📍 ${locShort}</div>
+  <div class="rc-date">${dateShort}</div>
+  <div class="rc-action ${actionCls}">${action}</div>
+  <div class="rc-num">${mktPct}<span class="rc-sub">市場</span></div>
+  <div class="rc-num">${modPct}<span class="rc-sub">模型</span></div>
+  <div class="rc-edge ${edgeCls}">${edgePct}</div>
+  ${linkBtn}
+</div>`;
+}
+
+// History tab state
+let _histTab = 'correct';
+let _histData = { correct: [], wrong: [] };
+
+function setHistTab(tab) {
+  _histTab = tab;
+  document.getElementById('htab-correct').classList.toggle('active-opp',      tab === 'correct');
+  document.getElementById('htab-wrong').classList.toggle('active-opp', tab === 'wrong');
+  _renderHistList();
+}
+
+function _renderHistHeader() {
+  const el = document.getElementById('hist-header-strip');
+  if (!el) return;
+  el.innerHTML = `
+    <div class="hdr-cell">市場<span class="hdr-arrow">⇅</span></div>
+    <div class="hdr-cell">地點<span class="hdr-arrow">⇅</span></div>
+    <div class="hdr-cell">日期<span class="hdr-arrow">⇅</span></div>
+    <div class="hdr-cell">操作<span class="hdr-arrow">⇅</span></div>
+    <div class="hdr-cell">市場<span class="hdr-arrow">⇅</span></div>
+    <div class="hdr-cell">模型<span class="hdr-arrow">⇅</span></div>
+    <div class="hdr-cell">套利<span class="hdr-arrow">⇅</span></div>
+    <div></div>`;
+  // Disable click — history rows are static (no sort for now; could add later)
+  el.querySelectorAll('.hdr-cell').forEach(c => { c.style.cursor = 'default'; c.style.pointerEvents = 'none'; });
+}
+
+function _renderHistList() {
+  const list = _histData[_histTab] || [];
+  const el = document.getElementById('hist-list');
+  if (!el) return;
+  if (list.length === 0) {
+    el.innerHTML = `<div class="history-empty" style="padding:24px 12px;color:var(--dim2)">${_histTab === 'correct' ? '尚無正確記錄' : '尚無失敗記錄'}</div>`;
+    return;
+  }
+  el.innerHTML = list.map(buildHistoryRow).join('');
 }
 
 async function loadHistoryResolved() {
-  // Show loading state
-  ['hist-correct-list','hist-wrong-list','hist-pending-list'].forEach(id => {
-    document.getElementById(id).innerHTML = '<div class="history-empty">載入中…</div>';
-  });
+  const listEl = document.getElementById('hist-list');
+  if (listEl) listEl.innerHTML = '<div class="history-empty" style="padding:24px 12px;color:var(--dim2)">載入中…</div>';
 
   try {
     const r = await fetch('/api/history/resolved?days=90');
@@ -2384,7 +2444,6 @@ async function loadHistoryResolved() {
 
     const correct  = d.success_count || 0;
     const wrong    = d.failure_count || 0;
-    const pending  = d.pending_count || 0;
     const settled  = d.total_settled || 0;
     const sr       = d.success_rate;
     const fr       = d.failure_rate;
@@ -2394,36 +2453,23 @@ async function loadHistoryResolved() {
     document.getElementById('hst-correct-pct').textContent = sr != null ? (sr*100).toFixed(1)+'%' : (settled ? '—' : 'N/A');
     document.getElementById('hst-wrong-n').textContent     = wrong;
     document.getElementById('hst-wrong-pct').textContent   = fr != null ? (fr*100).toFixed(1)+'%' : (settled ? '—' : 'N/A');
-    document.getElementById('hst-pending-n').textContent   = pending;
-    document.getElementById('hst-pending-lbl').textContent = pending > 0 ? '市場尚未結算' : '全部已結算';
 
     // Badge in toggle button
-    document.getElementById('history-badge-counts').textContent =
-      `✅${correct}  ❌${wrong}  ⏳${pending}`;
+    document.getElementById('history-badge-counts').textContent = `✅${correct}  ❌${wrong}`;
 
-    // Correct column
-    document.getElementById('hist-correct-count').textContent = correct;
-    document.getElementById('hist-correct-list').innerHTML = correct === 0
-      ? '<div class="history-empty">尚無正確記錄<br><span style="font-size:10px">市場結算後自動填入</span></div>'
-      : (d.correct || []).map(buildHistoryRow).join('');
+    // Tab counts
+    document.getElementById('htab-correct-n').textContent = correct;
+    document.getElementById('htab-wrong-n').textContent   = wrong;
 
-    // Wrong column
-    document.getElementById('hist-wrong-count').textContent = wrong;
-    document.getElementById('hist-wrong-list').innerHTML = wrong === 0
-      ? '<div class="history-empty">尚無失敗記錄<br><span style="font-size:10px">市場結算後自動填入</span></div>'
-      : (d.wrong || []).map(buildHistoryRow).join('');
+    _histData.correct = d.correct || [];
+    _histData.wrong   = d.wrong   || [];
 
-    // Pending column
-    document.getElementById('hist-pending-count').textContent = pending;
-    document.getElementById('hist-pending-list').innerHTML = pending === 0
-      ? '<div class="history-empty">無待結算記錄</div>'
-      : (d.pending || []).map(buildHistoryRow).join('');
+    _renderHistHeader();
+    _renderHistList();
 
   } catch(e) {
     console.warn('History load failed', e);
-    ['hist-correct-list','hist-wrong-list','hist-pending-list'].forEach(id => {
-      document.getElementById(id).innerHTML = `<div class="history-empty">載入失敗：${e.message}</div>`;
-    });
+    if (listEl) listEl.innerHTML = `<div class="history-empty" style="padding:24px 12px;color:var(--red)">載入失敗：${e.message}</div>`;
   }
 }
 
