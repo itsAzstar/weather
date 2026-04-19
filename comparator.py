@@ -26,7 +26,7 @@ MAX_DAYS_AHEAD = 10       # Only consider markets resolving within this window
 EDGE_THRESHOLD = 0.08     # 8% minimum divergence to flag as opportunity (5% had too much noise)
 # Asymmetric: historical BUY YES win rate 18% vs BUY NO 66% (2026-04 sample, n=97).
 # Model overconfident on YES side (temp thresholds usually unreachable), so require larger edge.
-EDGE_THRESHOLD_YES = 0.15
+EDGE_THRESHOLD_YES = 0.20
 EDGE_THRESHOLD_NO  = EDGE_THRESHOLD
 
 # ── Latency arbitrage zone ────────────────────────────────────────────────────
