@@ -62,6 +62,31 @@ header {
   font-size: 11px;
   font-family: var(--mono);
 }
+.mode-switch {
+  display: inline-flex;
+  margin-left: 16px;
+  border: 1px solid var(--border2);
+  background: var(--card);
+}
+.mode-btn {
+  background: transparent;
+  color: var(--dim2);
+  border: 0;
+  padding: 6px 14px;
+  font-size: 11px;
+  font-family: var(--mono);
+  font-weight: 700;
+  letter-spacing: .5px;
+  cursor: pointer;
+  transition: all .12s;
+}
+.mode-btn + .mode-btn { border-left: 1px solid var(--border2); }
+.mode-btn:hover { color: var(--text); }
+.mode-btn.active { background: var(--green); color: #000; }
+@media (max-width: 720px) {
+  .mode-switch { margin-left: 8px; }
+  .mode-btn { padding: 5px 10px; font-size: 10px; }
+}
 #refresh-btn {
   background: var(--green);
   color: #000;
@@ -930,6 +955,10 @@ main { display: grid; grid-template-columns: 1fr 290px; gap: 24px; padding: 24px
 
 <header>
   <div class="logo">🌤 Weather <span>Arb</span></div>
+  <div class="mode-switch" role="tablist">
+    <button class="mode-btn active" data-mode="weather"    onclick="setMode('weather')">天氣套利</button>
+    <button class="mode-btn"        data-mode="resolution" onclick="setMode('resolution')">結算套利</button>
+  </div>
   <div class="header-meta">
     <span class="scan-time" id="scan-time">—</span>
     <button id="refresh-btn" onclick="refresh()">⟳ 重新掃描</button>
@@ -1178,12 +1207,45 @@ let _allNoEdge = [];
 // Single source of truth for active filters.
 // setFilter(key, val) updates this and triggers renderAll().
 const _state = {
+  mode:         'weather', // 'weather' (model edge) | 'resolution' (settlement-arb)
   dateFilter:   'all',   // 'all' | ISO date | 'soon-2h' | 'soon-6h' | 'soon-today'
   regionFilter: 'all',   // 'all' | 'asia' | 'europe' | 'na' | 'sa' | 'mea' | 'aus'
   riskFilter:   'all',   // 'all' | 'slippage' | 'regime' | 'high-kelly'
   sortBy:       null,    // null | 'q' | 'loc' | 'date' | 'action' | 'yes' | 'mod' | 'edge'
   sortDir:      'desc',  // 'desc' | 'asc'
 };
+
+function setMode(m) {
+  if (_state.mode === m) return;
+  _state.mode = m;
+  document.querySelectorAll('.mode-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.mode === m);
+  });
+  renderAll();
+}
+
+// Resolution-arb detector: wu_definitive + winning side price leaves profit room
+function _resolutionArbProfit(r) {
+  if (!r.wu_definitive) return null;
+  const result = r.wu_definitive_result;  // 'dead' = NO wins, 'alive' = YES wins (future)
+  const yesPx = (r.market_price_yes != null) ? r.market_price_yes
+              : (r.market_price != null ? r.market_price : null);
+  if (yesPx == null) return null;
+  let side, entryPx, profit, pctReturn;
+  if (result === 'dead') {
+    side = 'NO'; entryPx = 1 - yesPx;
+    profit = yesPx;                 // collect 1.00 - (1-yesPx) = yesPx
+    pctReturn = (entryPx > 0) ? profit / entryPx : null;
+  } else if (result === 'alive') {
+    side = 'YES'; entryPx = yesPx;
+    profit = 1 - yesPx;
+    pctReturn = (entryPx > 0) ? profit / entryPx : null;
+  } else {
+    return null;
+  }
+  if (entryPx >= 0.99) return null; // no room
+  return { side, entryPx, profit, pctReturn };
+}
 
 function setFilter(key, val) {
   _state[key] = val;
@@ -1589,8 +1651,17 @@ function renderCards() {
   let filteredNoEdge = _filterAll(_allNoEdge,        dateFilter, riskFilter, regionFilter);
   const isSoon = dateFilter.startsWith('soon-');
 
-  // Apply user sort (overrides default ordering except soon-time)
-  if (_state.sortBy && !isSoon) {
+  // Resolution-arb mode: pool all markets (opps + no-edge) and keep only
+  // those with a confirmed wu_definitive outcome + room to profit. Sort by % return.
+  if (_state.mode === 'resolution') {
+    const pool = [..._allOpportunities, ..._allNoEdge]
+      .filter(r => _resolutionArbProfit(r) != null);
+    pool.forEach(r => { r._rarb = _resolutionArbProfit(r); });
+    pool.sort((a, b) => (b._rarb.pctReturn || 0) - (a._rarb.pctReturn || 0));
+    filteredOpps = pool;
+    filteredNoEdge = [];
+  } else if (_state.sortBy && !isSoon) {
+    // Apply user sort (overrides default ordering except soon-time)
     filteredOpps   = _applySort(filteredOpps);
     filteredNoEdge = _applySort(filteredNoEdge);
   }
@@ -1599,6 +1670,17 @@ function renderCards() {
 
   // ── Opportunities ──
   const oppList = document.getElementById('opportunities-list');
+  if (_state.mode === 'resolution' && filteredOpps.length === 0) {
+    oppList.innerHTML = `<div class="empty"><div class="empty-icon">🎯</div><div>目前無結算套利機會</div>
+      <div style="margin-top:8px;font-size:12px;color:var(--dim2)">等 WU 觀測讀數進來後自動出現（通常結算前 2-6h）</div></div>`;
+    document.getElementById('no-edge-list').innerHTML = '';
+    return;
+  }
+  if (_state.mode === 'resolution') {
+    oppList.innerHTML = filteredOpps.map(r => buildCard(r, true, null)).join('');
+    document.getElementById('no-edge-list').innerHTML = '';
+    return;
+  }
   if (filteredOpps.length === 0) {
     const noEdgeCount = filteredNoEdge.length;
     const hint = isSoon
