@@ -454,7 +454,7 @@ async def api_history_resolved(days: int = 90):
                 print(f"[History] Auto-resolved {newly_resolved} past market(s)")
         except Exception:
             pass
-        data = await asyncio.to_thread(get_all_predictions, days, 300)
+        data = await asyncio.to_thread(get_all_predictions, days, 5000)
         return JSONResponse(data)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
