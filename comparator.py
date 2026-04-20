@@ -848,10 +848,18 @@ async def compare_market(market: dict) -> Optional[dict]:
             #
             # "alive" (WU inside bucket) is NOT certain: temperature can still
             #   rise above hi_c before the day ends.  Tail risk persists.
-            if hi_c_b is not None and wu_temp_c > hi_c_b:
+            #
+            # Spike buffer: WU hourly observations occasionally include bad
+            # sensor spikes that get QC-filtered from the daily summary
+            # Polymarket resolves against.  Houston 2026-04-18 was flagged
+            # dead at bucket 82-83°F but actual daily high was 82.7°F — an
+            # intraday spike > 83.5°F pushed the WU reading above ceiling
+            # before QC.  Require 0.5°C (≈1°F) overshoot before trusting.
+            WU_SPIKE_BUFFER_C = 0.5
+            if hi_c_b is not None and wu_temp_c > hi_c_b + WU_SPIKE_BUFFER_C:
                 wu_definitive = True
                 wu_definitive_result = "dead"
-            elif lo_c_b is not None and wu_temp_c < lo_c_b and time_remaining_hours < 3.0:
+            elif lo_c_b is not None and wu_temp_c < lo_c_b - WU_SPIKE_BUFFER_C and time_remaining_hours < 3.0:
                 # WU daily high below floor with <3h left: won't reach lo_c
                 wu_definitive = True
                 wu_definitive_result = "dead"
