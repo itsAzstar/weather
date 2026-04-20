@@ -110,15 +110,19 @@ def _extract_temp_from_next_data(html: str) -> Optional[float]:
     except (KeyError, TypeError, IndexError):
         pass
 
-    # ── Path 2: observations array — take max of all hourly temps ────────────
+    # ── Path 2: observations array — spike-robust max of hourly temps ───────
+    # Bug fix (Houston 2026-04-18): single sensor spike in hourly obs can push
+    # "daily high" above what WU's dailysummary (and Polymarket's resolution
+    # anchor) eventually reports. When N>=4 observations exist, drop the
+    # single highest value and use the 2nd-highest as the reported peak —
+    # this removes lone outliers without losing signal on genuine highs.
     try:
         obs_list = (
             data["props"]["pageProps"]["historySummary"]["observations"]
         )
         if obs_list:
-            high_f = None
+            temps_f = []
             for obs in obs_list:
-                # Try imperial first (matches WU displayed value)
                 t = (
                     (obs.get("temperatureMax") or {}).get("imperial", {}).get("value")
                     or (obs.get("temp") or {}).get("imperial", {}).get("value")
@@ -126,11 +130,16 @@ def _extract_temp_from_next_data(html: str) -> Optional[float]:
                     or obs.get("temp_f")
                 )
                 if t is not None:
-                    t = float(t)
-                    if high_f is None or t > high_f:
-                        high_f = t
-            if high_f is not None:
-                return high_f
+                    try:
+                        temps_f.append(float(t))
+                    except (ValueError, TypeError):
+                        continue
+            if temps_f:
+                temps_f.sort(reverse=True)
+                # Spike filter: drop single highest when we have enough data
+                if len(temps_f) >= 4:
+                    return temps_f[1]
+                return temps_f[0]
     except (KeyError, TypeError):
         pass
 

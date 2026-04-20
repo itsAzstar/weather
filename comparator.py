@@ -89,42 +89,122 @@ _CITY_UTC_OFFSET: dict[str, float] = {
 }
 
 
+try:
+    from zoneinfo import ZoneInfo
+    _ZI_AVAILABLE = True
+except ImportError:
+    _ZI_AVAILABLE = False
+
+# City -> IANA timezone. Used by _get_utc_offset when zoneinfo is available
+# for accurate DST handling (handles cities that don't observe DST even if
+# their offset range suggests they might, e.g. Tokyo, Lagos, São Paulo).
+_CITY_TZ: dict[str, str] = {
+    "new york": "America/New_York", "nyc": "America/New_York", "new york city": "America/New_York",
+    "boston": "America/New_York", "philadelphia": "America/New_York", "washington dc": "America/New_York",
+    "miami": "America/New_York", "atlanta": "America/New_York", "charlotte": "America/New_York",
+    "orlando": "America/New_York", "tampa": "America/New_York", "baltimore": "America/New_York",
+    "pittsburgh": "America/New_York", "cleveland": "America/New_York", "detroit": "America/Detroit",
+    "columbus": "America/New_York", "indianapolis": "America/Indiana/Indianapolis",
+    "nashville": "America/Chicago", "memphis": "America/Chicago", "jacksonville": "America/New_York",
+    "raleigh": "America/New_York", "richmond": "America/New_York",
+    "chicago": "America/Chicago", "minneapolis": "America/Chicago", "milwaukee": "America/Chicago",
+    "st. louis": "America/Chicago", "kansas city": "America/Chicago", "omaha": "America/Chicago",
+    "des moines": "America/Chicago", "dallas": "America/Chicago", "houston": "America/Chicago",
+    "austin": "America/Chicago", "san antonio": "America/Chicago", "new orleans": "America/Chicago",
+    "oklahoma city": "America/Chicago", "little rock": "America/Chicago",
+    "denver": "America/Denver", "phoenix": "America/Phoenix", "salt lake city": "America/Denver",
+    "albuquerque": "America/Denver", "el paso": "America/Denver", "boise": "America/Boise",
+    "tucson": "America/Phoenix",
+    "los angeles": "America/Los_Angeles", "la": "America/Los_Angeles",
+    "san francisco": "America/Los_Angeles", "sf": "America/Los_Angeles",
+    "san jose": "America/Los_Angeles", "seattle": "America/Los_Angeles",
+    "portland": "America/Los_Angeles", "las vegas": "America/Los_Angeles",
+    "sacramento": "America/Los_Angeles", "san diego": "America/Los_Angeles",
+    "spokane": "America/Los_Angeles", "reno": "America/Los_Angeles",
+    "anchorage": "America/Anchorage", "juneau": "America/Juneau", "fairbanks": "America/Anchorage",
+    "toronto": "America/Toronto", "montreal": "America/Montreal", "ottawa": "America/Toronto",
+    "halifax": "America/Halifax", "vancouver": "America/Vancouver", "calgary": "America/Edmonton",
+    "edmonton": "America/Edmonton", "winnipeg": "America/Winnipeg",
+    "london": "Europe/London", "lisbon": "Europe/Lisbon", "reykjavik": "Atlantic/Reykjavik",
+    "paris": "Europe/Paris", "berlin": "Europe/Berlin", "madrid": "Europe/Madrid",
+    "rome": "Europe/Rome", "amsterdam": "Europe/Amsterdam", "brussels": "Europe/Brussels",
+    "zurich": "Europe/Zurich", "vienna": "Europe/Vienna", "prague": "Europe/Prague",
+    "warsaw": "Europe/Warsaw", "budapest": "Europe/Budapest", "stockholm": "Europe/Stockholm",
+    "oslo": "Europe/Oslo", "copenhagen": "Europe/Copenhagen", "helsinki": "Europe/Helsinki",
+    "athens": "Europe/Athens", "istanbul": "Europe/Istanbul", "moscow": "Europe/Moscow",
+    "dubai": "Asia/Dubai",
+    "tel aviv": "Asia/Tel_Aviv", "cairo": "Africa/Cairo", "jeddah": "Asia/Riyadh",
+    "mumbai": "Asia/Kolkata", "delhi": "Asia/Kolkata", "kolkata": "Asia/Kolkata",
+    "lucknow": "Asia/Kolkata",
+    "bangkok": "Asia/Bangkok", "jakarta": "Asia/Jakarta",
+    "kuala lumpur": "Asia/Kuala_Lumpur", "kl": "Asia/Kuala_Lumpur",
+    "singapore": "Asia/Singapore", "hong kong": "Asia/Hong_Kong",
+    "shenzhen": "Asia/Shanghai", "beijing": "Asia/Shanghai", "shanghai": "Asia/Shanghai",
+    "taipei": "Asia/Taipei", "seoul": "Asia/Seoul", "tokyo": "Asia/Tokyo", "osaka": "Asia/Tokyo",
+    "sydney": "Australia/Sydney", "melbourne": "Australia/Melbourne",
+    "brisbane": "Australia/Brisbane", "auckland": "Pacific/Auckland",
+    "wellington": "Pacific/Auckland",
+    "sao paulo": "America/Sao_Paulo", "rio de janeiro": "America/Sao_Paulo",
+    "buenos aires": "America/Argentina/Buenos_Aires", "mexico city": "America/Mexico_City",
+    "panama city": "America/Panama", "bogota": "America/Bogota", "lima": "America/Lima",
+    "santiago": "America/Santiago",
+    "nairobi": "Africa/Nairobi", "lagos": "Africa/Lagos",
+    "johannesburg": "Africa/Johannesburg", "cape town": "Africa/Johannesburg",
+}
+
+
 def _is_dst_active(dt: datetime, base_offset: float) -> bool:
     """
-    Rough DST check.  Returns True when summer time adds +1h to base_offset.
+    Rough DST check — fallback when zoneinfo isn't available or city unknown.
     Covers US (2nd Sun Mar → 1st Sun Nov), EU (last Sun Mar → last Sun Oct),
-    and Southern Hemisphere flips (AU/NZ/SA: 1st Sun Oct → 1st Sun Apr).
+    and AU/NZ (1st Sun Oct → 1st Sun Apr).
 
-    This is intentionally approximate — we only need ±1h accuracy for
-    cos-phase calculations, and a full pytz/zoneinfo import would be overkill.
+    Known imperfect: falsely flags DST for non-DST regions in the covered
+    offset ranges (Japan, China, India, most of Africa, most of South America).
+    _get_utc_offset uses zoneinfo first when possible to avoid this.
     """
     month = dt.month
     day   = dt.day
 
     # ── Northern Hemisphere DST (UTC-11 … UTC+3): roughly Apr–Oct ────────────
     if -11 <= base_offset <= 3:
-        # US: 2nd Sunday March → 1st Sunday November
-        # EU: last Sunday March → last Sunday October
-        # Approximation: active Apr 1 – Oct 31 (good enough)
         return 3 < month < 11 or (month == 3 and day >= 8) or (month == 11 and day < 7)
 
     # ── Southern Hemisphere (AU/NZ/SA: UTC+8 … UTC+13) ───────────────────────
     if base_offset >= 8:
-        # AU/NZ: 1st Sunday Oct → 1st Sunday Apr
         return month >= 10 or month <= 3
 
-    # Mid-latitudes without DST (most of Asia, Africa) — assume no DST
     return False
 
 
 def _get_utc_offset(city: str, lon: float, dt: Optional[datetime] = None) -> float:
     """
-    Return approximate UTC offset in hours for a city.
-    Uses hardcoded table (winter/standard offsets) and applies DST correction
-    when dt is provided — adds +1h for regions that observe summer time.
-    Falls back to lon/15 heuristic for unknown cities.
+    Return UTC offset in hours for a city at a given moment.
+    Prefers zoneinfo (handles DST exactly, including cities that don't
+    observe DST in otherwise-DST-ranged offsets). Falls back to hardcoded
+    offset table + approximate DST rule, then to lon/15 heuristic.
     """
     key = city.strip().lower()
+
+    # ── Preferred: real tz lookup via zoneinfo ──────────────────────────────
+    if _ZI_AVAILABLE and dt is not None:
+        tz_name = _CITY_TZ.get(key)
+        if tz_name is None:
+            for ck, tn in _CITY_TZ.items():
+                if key in ck or ck in key:
+                    tz_name = tn
+                    break
+        if tz_name:
+            try:
+                tz = ZoneInfo(tz_name)
+                moment = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+                off = moment.astimezone(tz).utcoffset()
+                if off is not None:
+                    return off.total_seconds() / 3600.0
+            except Exception:
+                pass
+
+    # ── Fallback: hardcoded base offset + approximate DST rule ──────────────
     base = None
     if key in _CITY_UTC_OFFSET:
         base = _CITY_UTC_OFFSET[key]

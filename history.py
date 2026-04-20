@@ -483,7 +483,9 @@ def auto_resolve_past_markets():
                     resolved += 1
                     archive_hits += 1
 
-        except Exception:
+        except Exception as e:
+            print(f"[History] Resolve failed for {r['condition_id'][:10]}... "
+                  f"({r['location']}/{r['target_date']}): {type(e).__name__}: {e}")
             continue
 
     if resolved:
