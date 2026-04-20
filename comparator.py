@@ -786,10 +786,12 @@ async def _get_station_data(location: str, weather: Optional[dict], target_date:
             try:
                 wu = await get_wu_temp_cached(icao, target_date)
                 if wu:
-                    result["wu_temp_c"]  = wu.get("wu_temp_c")
-                    result["wu_temp_f"]  = wu.get("wu_temp_f")
-                    result["wu_age_min"] = wu.get("wu_age_min")
-                    result["wu_source"]  = wu.get("wu_source")
+                    result["wu_temp_c"]      = wu.get("wu_temp_c")
+                    result["wu_temp_f"]      = wu.get("wu_temp_f")
+                    result["wu_temp_c_raw"]  = wu.get("wu_temp_c_raw")
+                    result["wu_temp_f_raw"]  = wu.get("wu_temp_f_raw")
+                    result["wu_age_min"]     = wu.get("wu_age_min")
+                    result["wu_source"]      = wu.get("wu_source")
             except Exception as wu_e:
                 print(f"[WU] Skipping WU fetch for {location}: {wu_e}")
 
@@ -903,7 +905,10 @@ async def compare_market(market: dict) -> Optional[dict]:
         # metar_temp = instantaneous METAR reading → Kalman diurnal model input.
         # NEVER conflate them: using wu_high as Kalman obs inflates T_max_post
         # by ~2°C at 10am and causes phantom spillover into adjacent buckets.
-        wu_temp_c  = station_data.get("wu_temp_c")
+        wu_temp_c     = station_data.get("wu_temp_c")       # spike-robust max
+        wu_temp_c_raw = station_data.get("wu_temp_c_raw")   # true max incl. spikes
+        if wu_temp_c_raw is None:
+            wu_temp_c_raw = wu_temp_c
         metar_temp = station_data.get("obs_temp_c")
         # Kalman input: METAR current temp (instantaneous).
         # Ceiling check: WU daily high (monotonically non-decreasing).
@@ -936,11 +941,17 @@ async def compare_market(market: dict) -> Optional[dict]:
             # intraday spike > 83.5°F pushed the WU reading above ceiling
             # before QC.  Require 0.5°C (≈1°F) overshoot before trusting.
             WU_SPIKE_BUFFER_C = 0.5
+            # Ceiling check uses spike-robust max: a single bad hourly obs
+            # shouldn't flip a market dead when QC'd daily summary disagrees.
             if hi_c_b is not None and wu_temp_c > hi_c_b + WU_SPIKE_BUFFER_C:
                 wu_definitive = True
                 wu_definitive_result = "dead"
-            elif lo_c_b is not None and wu_temp_c < lo_c_b - WU_SPIKE_BUFFER_C and time_remaining_hours < 3.0:
-                # WU daily high below floor with <3h left: won't reach lo_c
+            # Floor check uses RAW max (true max across all obs). Tokyo
+            # 2026-04-19 regression: spike filter dropped a legitimate
+            # single-hour 22°C peak, making robust max read 20°C and
+            # falsely triggering "dead below 22.5°C floor". If any hour
+            # actually touched the bucket, we cannot declare dead.
+            elif lo_c_b is not None and wu_temp_c_raw < lo_c_b - WU_SPIKE_BUFFER_C and time_remaining_hours < 3.0:
                 wu_definitive = True
                 wu_definitive_result = "dead"
 

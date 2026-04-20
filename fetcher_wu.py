@@ -70,10 +70,16 @@ def _cache_ttl(target_date: date) -> float:
     return WU_CACHE_TTL_ACTIVE
 
 
-def _extract_temp_from_next_data(html: str) -> Optional[float]:
+def _extract_temp_from_next_data(html: str) -> tuple[Optional[float], Optional[float]]:
     """
     Parse the __NEXT_DATA__ JSON blob embedded in WU's Next.js page.
-    Returns the daily high temperature in Fahrenheit, or None.
+    Returns (high_robust_f, high_raw_f) — both in Fahrenheit, or (None, None).
+
+    high_robust_f drops the single highest observation when N>=4 to filter
+    transient sensor spikes (used for "bucket dead above ceiling" decisions).
+    high_raw_f is the true max across all observations (used for "bucket
+    dead below floor" — we want to be conservative about calling a market
+    dead when a single hour may have legitimately peaked near the bucket).
 
     WU embeds observation data in multiple possible locations in the JSON.
     We try several known paths to be resilient to page structure changes.
@@ -83,14 +89,15 @@ def _extract_temp_from_next_data(html: str) -> Optional[float]:
         html, re.DOTALL
     )
     if not m:
-        return None
+        return (None, None)
 
     try:
         data = json.loads(m.group(1))
     except (json.JSONDecodeError, ValueError):
-        return None
+        return (None, None)
 
     # ── Path 1: historySummary.dailysummary[0].hightempi / hightempm ─────────
+    # dailysummary is WU's own QC'd daily roll-up — no spike filtering needed.
     try:
         daily = (
             data["props"]["pageProps"]["historySummary"]["dailysummary"]
@@ -103,19 +110,21 @@ def _extract_temp_from_next_data(html: str) -> Optional[float]:
                 or (row.get("hightemp", {}) or {}).get("imperial", {}).get("value")
             )
             if hi_f is not None:
-                return float(hi_f)
+                v = float(hi_f)
+                return (v, v)
             hi_c = row.get("hightempm") or row.get("maxtempm")
             if hi_c is not None:
-                return float(hi_c) * 9 / 5 + 32
+                v = float(hi_c) * 9 / 5 + 32
+                return (v, v)
     except (KeyError, TypeError, IndexError):
         pass
 
-    # ── Path 2: observations array — spike-robust max of hourly temps ───────
-    # Bug fix (Houston 2026-04-18): single sensor spike in hourly obs can push
-    # "daily high" above what WU's dailysummary (and Polymarket's resolution
-    # anchor) eventually reports. When N>=4 observations exist, drop the
-    # single highest value and use the 2nd-highest as the reported peak —
-    # this removes lone outliers without losing signal on genuine highs.
+    # ── Path 2: observations array — return both robust and raw max ──────────
+    # Raw max = true max across all hourly obs (used for floor check — we
+    #   want to be conservative about calling a bucket dead-below-floor when
+    #   one legitimate hour may have peaked inside the bucket).
+    # Robust max = drop single highest when N>=4 to filter sensor spikes
+    #   (used for ceiling check — Houston 2026-04-18 spike case).
     try:
         obs_list = (
             data["props"]["pageProps"]["historySummary"]["observations"]
@@ -136,19 +145,16 @@ def _extract_temp_from_next_data(html: str) -> Optional[float]:
                         continue
             if temps_f:
                 temps_f.sort(reverse=True)
-                # Spike filter: drop single highest when we have enough data
-                if len(temps_f) >= 4:
-                    return temps_f[1]
-                return temps_f[0]
+                raw = temps_f[0]
+                robust = temps_f[1] if len(temps_f) >= 4 else temps_f[0]
+                return (robust, raw)
     except (KeyError, TypeError):
         pass
 
     # ── Path 3: nested under a different key structure ────────────────────────
     try:
-        # Some versions of WU Next.js structure it differently
         history = data["props"]["pageProps"]["history"]
         if history:
-            # Daily summary might be here
             daily = history.get("dailysummary") or history.get("observations", [])
             if isinstance(daily, list) and daily:
                 row = daily[0]
@@ -159,11 +165,12 @@ def _extract_temp_from_next_data(html: str) -> Optional[float]:
                     or row.get("TemperatureHighF")
                 )
                 if hi_f is not None:
-                    return float(hi_f)
+                    v = float(hi_f)
+                    return (v, v)
     except (KeyError, TypeError, IndexError):
         pass
 
-    return None
+    return (None, None)
 
 
 def _extract_temp_from_html_table(html: str) -> Optional[float]:
@@ -246,17 +253,20 @@ async def get_wu_daily_high(
             html = await resp.text()
 
         # Try __NEXT_DATA__ first (authoritative), then HTML table fallback
-        temp_f = _extract_temp_from_next_data(html)
+        temp_f, temp_f_raw = _extract_temp_from_next_data(html)
         if temp_f is None:
             temp_f = _extract_temp_from_html_table(html)
+            temp_f_raw = temp_f   # table fallback: no obs list to compute raw
 
         if temp_f is None:
             print(f"[WU] Could not parse temperature for {icao} {target_date}")
             # Don't cache parse failures — WU page structure may change
             return None
 
-        temp_c = round((temp_f - 32) * 5 / 9, 1)
-        temp_f = round(temp_f, 1)
+        temp_c      = round((temp_f - 32) * 5 / 9, 1)
+        temp_f      = round(temp_f, 1)
+        temp_f_raw  = round(temp_f_raw, 1) if temp_f_raw is not None else temp_f
+        temp_c_raw  = round((temp_f_raw - 32) * 5 / 9, 1)
 
         # Estimate observation age: WU updates hourly for active days.
         # "Settled" only when target_date is >= 2 UTC days behind (past in every tz).
@@ -269,13 +279,16 @@ async def get_wu_daily_high(
             age_min = round(now_dt.minute + (now_dt.second / 60), 1)
 
         result = {
-            "wu_temp_f":  temp_f,
-            "wu_temp_c":  temp_c,
-            "wu_date":    target_date.isoformat(),
-            "wu_station": icao,
-            "wu_age_min": age_min,
+            "wu_temp_f":     temp_f,
+            "wu_temp_c":     temp_c,
+            "wu_temp_f_raw": temp_f_raw,
+            "wu_temp_c_raw": temp_c_raw,
+            "wu_date":       target_date.isoformat(),
+            "wu_station":    icao,
+            "wu_age_min":    age_min,
         }
-        print(f"[WU] {icao} {target_date}: high={temp_f}°F ({temp_c}°C)")
+        spike_note = "" if temp_f_raw == temp_f else f" (raw={temp_f_raw}°F)"
+        print(f"[WU] {icao} {target_date}: high={temp_f}°F ({temp_c}°C){spike_note}")
 
         async with _get_wu_lock():
             _wu_cache[key] = (result, now)
