@@ -387,6 +387,14 @@ def _resolve_from_weather_archive(condition_id: str, location: str,
         bucket = json.loads(temp_bucket_json or "{}")
         if not bucket:
             return None
+        # KNOWN LIMITATION: resolve_location() returns city-center coords, but
+        # Polymarket resolves against the Wunderground ICAO station high (often
+        # an airport 5-20 km from downtown). For cities like Austin (KAUS 10 km
+        # south) or Dallas (KDAL downtown vs DFW airport) this can introduce a
+        # 0.5-2°C bias in archive-fallback resolutions. Stage 1 (Polymarket CLOB)
+        # is the truth-source and gets tried first, so this only affects stuck
+        # pending rows where CLOB hasn't settled. TODO: add ICAO→coords table
+        # in fetcher_stations.py and prefer station coords when icao is known.
         coords = resolve_location(location)
         if not coords:
             return None
@@ -420,7 +428,11 @@ def _resolve_from_weather_archive(condition_id: str, location: str,
         elif hi_c is not None:
             return actual_c <= hi_c
         return None
-    except Exception:
+    except Exception as e:
+        # Archive fallback failure: log so we notice systematic Open-Meteo outages
+        # or resolve_location() misses instead of silently leaving rows pending forever.
+        print(f"[Archive] Resolve failed for {location}/{target_date_str}: "
+              f"{type(e).__name__}: {e}")
         return None
 
 

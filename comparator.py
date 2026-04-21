@@ -924,7 +924,10 @@ async def compare_market(market: dict) -> Optional[dict]:
         # If WU high inside bucket and < 2h left → BUY YES with high confidence.
         in_latency_arb_zone = time_remaining_hours < LATENCY_ARB_HOURS
         wu_definitive = False
-        wu_definitive_result = None  # "dead" or "alive"
+        # Only "dead" is ever set today. "alive" was speculative — removed from
+        # the type to prevent future dead-code confusion. Any unreached `== "alive"`
+        # check in consumers is a latent bug, not a feature.
+        wu_definitive_result = None  # "dead" | None
 
         if wu_temp_c is not None and in_latency_arb_zone:
             lo_c_b = temp_bucket.get("lo_c")
