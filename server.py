@@ -209,7 +209,10 @@ async def _run_scan() -> list[dict]:
                             raw_edge = cp - mkt_px_f
                             r["edge"] = round(raw_edge, 4)
                             r["abs_edge"] = abs(round(raw_edge, 4))
-                            if abs(raw_edge) >= 0.08:
+                            # Asymmetric thresholds: YES needs 0.25, NO needs 0.08.
+                            # (see EDGE_THRESHOLD_YES in comparator.py — same logic applied here)
+                            thr = 0.25 if raw_edge > 0 else 0.08
+                            if abs(raw_edge) >= thr:
                                 r["action"] = "BUY YES" if raw_edge > 0 else "BUY NO"
                                 r["is_opportunity"] = True
                             else:
@@ -226,7 +229,14 @@ async def _run_scan() -> list[dict]:
                         cons.get("conviction", "low"), 0.3
                     )
                     kelly_size = round(exec_edge * conv_factor * 10, 2)
-                    r["kelly_bet"] = min(kelly_size, 10.0)
+                    # wu_definitive 訊號在真實世界勝率 10/10（扣除 Houston spike bug），
+                    # Brier 0.089 — 是目前最可靠訊號。給 1.5× 加碼、cap 拉到 $15。
+                    if r.get("model_prob_source") == "wu_definitive":
+                        kelly_size = round(kelly_size * 1.5, 2)
+                        r["kelly_boost"] = "wu_definitive_1.5x"
+                        r["kelly_bet"]   = min(kelly_size, 15.0)
+                    else:
+                        r["kelly_bet"]   = min(kelly_size, 10.0)
                 except Exception:
                     r["consensus"] = None
             try:
@@ -257,7 +267,10 @@ async def _run_scan() -> list[dict]:
     # overstates total capital at risk by up to N× (one per bucket).
     # Fix: group by (city, date), sum raw Kelly bets, scale proportionally if
     # total exceeds the per-group cap.
-    MAX_GROUP_KELLY = 10.0   # max total $-exposure per (city, date) group
+    # Per-group cap: 15 if any market in group is wu_definitive (high-conviction
+    # physical signal), else 10. Prevents clipping the boosted wu_definitive bet.
+    MAX_GROUP_KELLY_BASE = 10.0
+    MAX_GROUP_KELLY_WU   = 15.0
     from collections import defaultdict as _defaultdict
     bucket_groups: dict = _defaultdict(list)
     for r in enriched:
@@ -270,15 +283,18 @@ async def _run_scan() -> list[dict]:
 
     for (city, date_s), group in bucket_groups.items():
         total_kelly = sum(r.get("kelly_bet") or 0.0 for r in group)
-        if total_kelly > MAX_GROUP_KELLY and total_kelly > 0:
-            scale = MAX_GROUP_KELLY / total_kelly
+        group_cap = (MAX_GROUP_KELLY_WU
+                     if any(r.get("model_prob_source") == "wu_definitive" for r in group)
+                     else MAX_GROUP_KELLY_BASE)
+        if total_kelly > group_cap and total_kelly > 0:
+            scale = group_cap / total_kelly
             for r in group:
                 raw_k = r.get("kelly_bet") or 0.0
                 r["kelly_bet"]             = round(raw_k * scale, 2)
                 r["kelly_portfolio_scaled"] = True
                 r["kelly_group_total_raw"]  = round(total_kelly, 2)
             print(f"[Portfolio Kelly] {city} {date_s}: {len(group)} buckets "
-                  f"${total_kelly:.2f} → ${MAX_GROUP_KELLY:.2f} (scale={scale:.3f})")
+                  f"${total_kelly:.2f} → ${group_cap:.2f} (scale={scale:.3f})")
 
     # ── Background: resolve any past markets (non-blocking asyncio task) ────────
     async def _bg_resolve():

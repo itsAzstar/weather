@@ -24,9 +24,11 @@ from fetcher_polymarket import fetch_clob_book, sweep_book as _sweep_book
 
 MAX_DAYS_AHEAD = 10       # Only consider markets resolving within this window
 EDGE_THRESHOLD = 0.08     # 8% minimum divergence to flag as opportunity (5% had too much noise)
-# Asymmetric: historical BUY YES win rate 18% vs BUY NO 66% (2026-04 sample, n=97).
-# Model overconfident on YES side (temp thresholds usually unreachable), so require larger edge.
-EDGE_THRESHOLD_YES = 0.20
+# Asymmetric: BUY YES remains structurally underperforming vs BUY NO.
+# 2026-04-18→21 rolling sample (n=262): BUY YES 29.2% (14/48) vs BUY NO 67.8% (145/214).
+# Even after lifting YES threshold 0.15→0.20, YES still ~21pp below break-even.
+# Push to 0.25 — forces YES bets only when model is *very* confident the bucket hits.
+EDGE_THRESHOLD_YES = 0.25
 EDGE_THRESHOLD_NO  = EDGE_THRESHOLD
 
 # ── Latency arbitrage zone ────────────────────────────────────────────────────
