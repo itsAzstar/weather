@@ -2462,7 +2462,24 @@ function buildHistoryRow(r) {
   const srcLabel   = _SRC_LABEL[r.model_prob_source] || '—';
   const loc        = r.location || '—';
   const locShort   = loc.length > 14 ? loc.slice(0, 13) + '…' : loc;
-  const tempInline = r.temp_display ? `<span class="rc-tempdisplay">🌡${r.temp_display}</span>` : '';
+  // Resolved rows show "bucket → actual high". Actual high from WU at
+  // resolution time, stored in `resolved_high_f`. Color green if the
+  // actual landed inside the bucket (YES would win), else dim grey.
+  let tempInline = '';
+  if (r.temp_display) {
+    if (r.resolved_high_f != null) {
+      const bucket = r.temp_bucket_json ? (()=>{try{return JSON.parse(r.temp_bucket_json);}catch(e){return null;}})() : null;
+      const hi = r.resolved_high_f;
+      // WU resolves to whole °F — compare with truncated bucket edges (°F unit).
+      const inBucket = bucket && bucket.lo != null && bucket.hi != null
+        ? (Math.floor(hi) >= bucket.lo && Math.floor(hi) <= bucket.hi)
+        : null;
+      const hiColor = inBucket === true ? 'var(--green)' : inBucket === false ? 'var(--dim)' : 'var(--blue)';
+      tempInline = `<span class="rc-tempdisplay">🌡${r.temp_display} → <b style="color:${hiColor}">${hi.toFixed(0)}°F</b></span>`;
+    } else {
+      tempInline = `<span class="rc-tempdisplay">🌡${r.temp_display}</span>`;
+    }
+  }
   const verdict    = r.verdict;
   const verdictBadge = verdict === 'correct'
     ? '<span class="rc-badge" style="color:var(--green)">✓W</span>'

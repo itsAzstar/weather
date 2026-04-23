@@ -4,6 +4,7 @@ SQLite 歷史記錄 + Brier Score 校準追蹤。
 每次掃描時記錄預測，市場結算後記錄結果，計算滾動 Brier Score。
 """
 
+import asyncio
 import os
 import sqlite3
 import json
@@ -109,6 +110,11 @@ def init_db():
             ("wu_temp_c_raw",     "REAL"),   # WU true max (includes single-hour spikes)
             ("wu_data_source",    "TEXT"),   # dailysummary | observations | ...
             ("obs_temp_c",        "REAL"),   # METAR instantaneous reading at decision time
+            # Actual daily high at resolution time (°F). Populated by
+            # auto_resolve_past_markets when CLOB resolution lands. Enables
+            # the UI to show "bucket 64-65°F → 65°F (actual)" and lets us
+            # post-hoc audit resolver errors without re-fetching WU.
+            ("resolved_high_f",   "REAL"),
         ]:
             try:
                 conn.execute(f"ALTER TABLE predictions ADD COLUMN {col} {coltype}")
@@ -222,22 +228,48 @@ def log_prediction(result: dict):
         ))
 
 
-def record_outcome(condition_id: str, outcome: bool, source: str = "manual"):
+_SOURCE_PRIORITY = {"manual": 3, "polymarket": 2, "archive": 1}
+
+
+def record_outcome(condition_id: str, outcome: bool, source: str = "manual",
+                   resolved_high_f: Optional[float] = None):
     """
     市場結算後記錄結果。
     outcome=True → YES 結算, False → NO 結算。
     source: 'polymarket' | 'archive' | 'manual'
+    resolved_high_f: actual daily high at ICAO station (°F), when known.
+
+    Priority rule: a higher-priority source may OVERWRITE an earlier
+    resolution. Previously `WHERE outcome IS NULL` froze the first answer
+    in place — so archive-fallback errors (e.g. SF 4-22 64-65°F resolved
+    NO from Open-Meteo city-center coords, when KSFO actually hit 65°F
+    and CLOB later resolved YES) became permanent lies in the DB. Now
+    polymarket > archive overwrites archive rows once CLOB finalizes.
     """
     init_db()
+    new_pri = _SOURCE_PRIORITY.get(source, 0)
     with _connect() as conn:
+        cur = conn.execute(
+            "SELECT outcome, resolution_source FROM predictions WHERE condition_id=?",
+            (condition_id,),
+        ).fetchone()
+        if cur is None:
+            return
+        existing_pri = _SOURCE_PRIORITY.get(cur["resolution_source"] or "", 0)
+        # Only overwrite when new source is strictly higher priority,
+        # OR when no outcome is stored yet.
+        if cur["outcome"] is not None and new_pri <= existing_pri:
+            return
         conn.execute("""
             UPDATE predictions
-            SET outcome=?, resolved_at=?, resolution_source=?
-            WHERE condition_id=? AND outcome IS NULL
+            SET outcome=?, resolved_at=?, resolution_source=?,
+                resolved_high_f=COALESCE(?, resolved_high_f)
+            WHERE condition_id=?
         """, (
             1 if outcome else 0,
             datetime.now(timezone.utc).isoformat(),
             source,
+            resolved_high_f,
             condition_id,
         ))
 
@@ -467,6 +499,40 @@ def _resolve_from_weather_archive(condition_id: str, location: str,
         return None
 
 
+def _fetch_resolved_high_f(location: str, target_date_str: str) -> Optional[float]:
+    """
+    Fetch the actual WU daily high (°F) at resolution time, for storage +
+    display. Runs inside the resolver's worker thread (via asyncio.to_thread),
+    so we use sync urllib instead of the async aiohttp session (which is
+    bound to the main event loop and unusable cross-loop).
+
+    Reuses `fetcher_wu._extract_temp_from_next_data` for schema parsing.
+    Returns None on any failure — never raises. Caller stores NULL.
+    """
+    try:
+        from fetcher_stations import resolve_station
+        from fetcher_wu import _extract_temp_from_next_data, WU_HEADERS
+        icao = resolve_station(location or "")
+        if not icao:
+            return None
+        target_d = date.fromisoformat(target_date_str)
+        date_str = f"{target_d.year}-{target_d.month}-{target_d.day}"
+        url = f"https://www.wunderground.com/history/daily/{icao}/date/{date_str}"
+        req = urllib.request.Request(url, headers=WU_HEADERS)
+        with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+        robust, raw, source = _extract_temp_from_next_data(html)
+        # Prefer robust (spike-filtered). For dailysummary source they're
+        # identical. For observations we still trust robust — single-hour
+        # spikes above real daily high shouldn't drive the "actual" display.
+        if robust is not None:
+            return float(robust)
+    except Exception as e:
+        print(f"[Resolve] WU high fetch failed for {location}/{target_date_str}: "
+              f"{type(e).__name__}: {e}")
+    return None
+
+
 def auto_resolve_past_markets():
     """
     Auto-resolve past predictions using a two-stage approach:
@@ -483,20 +549,36 @@ def auto_resolve_past_markets():
     """
     init_db()
     yesterday = (date.today() - timedelta(days=1)).isoformat()
+    # Re-check ALL archive resolutions. Archive fallback fires when CLOB
+    # hasn't finalized (west-coast markets resolved at UTC midnight while
+    # local SF is still 5pm → Open-Meteo city-center coords gave wrong
+    # answer, see SF 2026-04-22 64-65°F case). CLOB corrects hours or
+    # days later. Audit on 2026-04-24 found ~45% of archive-resolved rows
+    # were wrong — too large to ignore, worth the cost to re-query all of
+    # them once CLOB catches up. Priority ordering + `outcome IS NULL`
+    # preserves the no-op fast path for already-correct rows.
 
     with _connect() as conn:
         rows = conn.execute("""
             SELECT id, condition_id, location, target_date,
-                   temp_bucket_json, market_subtype, market_url
+                   temp_bucket_json, market_subtype, market_url,
+                   outcome, resolution_source
             FROM predictions
-            WHERE outcome IS NULL
-              AND target_date <= ?
-            LIMIT 200
+            WHERE target_date <= ?
+              AND (
+                outcome IS NULL
+                OR resolution_source = 'archive'
+                OR (resolution_source = 'polymarket' AND resolved_high_f IS NULL
+                    AND market_subtype = 'temperature_bucket')
+              )
+            ORDER BY (outcome IS NULL) DESC, target_date DESC
+            LIMIT 300
         """, (yesterday,)).fetchall()
 
     resolved = 0
     poly_hits = 0
     archive_hits = 0
+    upgraded = 0  # archive → polymarket corrections
 
     for r in rows:
         try:
@@ -505,12 +587,33 @@ def auto_resolve_past_markets():
             if condition_id.startswith("mock-"):
                 continue
 
+            is_new = r["outcome"] is None
+            is_archive_recheck = (not is_new
+                                  and r["resolution_source"] == "archive")
+
             # ── Stage 1: Ask Polymarket directly ──────────────────────
             outcome = _resolve_from_polymarket(condition_id)
             if outcome is not None:
-                record_outcome(condition_id, outcome, source="polymarket")
-                resolved += 1
-                poly_hits += 1
+                high_f = _fetch_resolved_high_f(
+                    r["location"] or "", r["target_date"]
+                ) if r["market_subtype"] == "temperature_bucket" else None
+                was_wrong = (is_archive_recheck
+                             and r["outcome"] != (1 if outcome else 0))
+                record_outcome(condition_id, outcome, source="polymarket",
+                               resolved_high_f=high_f)
+                if is_new:
+                    resolved += 1
+                    poly_hits += 1
+                elif was_wrong:
+                    upgraded += 1
+                    print(f"[Resolve] Corrected {r['location']}/{r['target_date']}: "
+                          f"archive={r['outcome']} → polymarket={1 if outcome else 0}")
+                continue
+
+            # Skip archive path for rows already resolved — if CLOB still
+            # isn't ready, keep whatever answer (archive or polymarket)
+            # we already have.
+            if not is_new:
                 continue
 
             # ── Stage 2: Estimate from weather archive (temp only) ────
@@ -531,9 +634,10 @@ def auto_resolve_past_markets():
                   f"({r['location']}/{r['target_date']}): {type(e).__name__}: {e}")
             continue
 
-    if resolved:
-        print(f"[History] Resolved {resolved} markets "
-              f"(Polymarket: {poly_hits}, archive-estimate: {archive_hits})")
+    if resolved or upgraded:
+        print(f"[History] Resolved {resolved} new markets "
+              f"(Polymarket: {poly_hits}, archive-estimate: {archive_hits}), "
+              f"corrected {upgraded} archive→polymarket")
     return resolved
 
 
@@ -553,7 +657,8 @@ def get_all_predictions(days: int = 90, limit: int = 200) -> dict:
                    conviction, predicted_at, outcome, resolved_at,
                    temp_bucket_json, market_url, market_subtype, temp_display,
                    model_prob_source,
-                   wu_temp_c, wu_temp_c_raw, wu_data_source, obs_temp_c
+                   wu_temp_c, wu_temp_c_raw, wu_data_source, obs_temp_c,
+                   resolved_high_f, resolution_source
             FROM predictions
             WHERE predicted_at >= ?
             ORDER BY predicted_at DESC
