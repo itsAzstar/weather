@@ -166,6 +166,15 @@ def log_prediction(result: dict):
         time_remaining_hours = result.get("time_remaining_hours")
         in_latency = result.get("in_latency_arb_zone")
 
+        # model_prob_source default: comparator's default path is "nowcast"
+        # (Kalman + METAR + WU adjustment). Previously only _enrich_one set
+        # this tag, and only for top-10 opps — so 95% of rows landed as NULL
+        # and Brier-by-source groups mislabeled them "legacy_null" (n=1049
+        # vs nowcast=0 as of 2026-04-23). Tag at log time so every row
+        # classifies correctly. Upstream wu_definitive / consensus_override
+        # tags are preserved because we only fill when missing.
+        mp_src = result.get("model_prob_source") or "nowcast"
+
         # Weather snapshot at decision time — used for post-hoc debugging
         # ("why did we flag this dead?") instead of re-fetching at resolve-time.
         def _f(v):
@@ -205,7 +214,7 @@ def log_prediction(result: dict):
             1 if obs_adjusted else (0 if obs_adjusted is False else None),
             float(time_remaining_hours) if isinstance(time_remaining_hours, (int, float)) else None,
             1 if in_latency else (0 if in_latency is False else None),
-            result.get("model_prob_source"),
+            mp_src,
             _f(result.get("wu_temp_c")),
             _f(result.get("wu_temp_c_raw")),
             result.get("wu_data_source"),
