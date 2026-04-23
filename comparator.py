@@ -788,12 +788,13 @@ async def _get_station_data(location: str, weather: Optional[dict], target_date:
             try:
                 wu = await get_wu_temp_cached(icao, target_date)
                 if wu:
-                    result["wu_temp_c"]      = wu.get("wu_temp_c")
-                    result["wu_temp_f"]      = wu.get("wu_temp_f")
-                    result["wu_temp_c_raw"]  = wu.get("wu_temp_c_raw")
-                    result["wu_temp_f_raw"]  = wu.get("wu_temp_f_raw")
-                    result["wu_age_min"]     = wu.get("wu_age_min")
-                    result["wu_source"]      = wu.get("wu_source")
+                    result["wu_temp_c"]       = wu.get("wu_temp_c")
+                    result["wu_temp_f"]       = wu.get("wu_temp_f")
+                    result["wu_temp_c_raw"]   = wu.get("wu_temp_c_raw")
+                    result["wu_temp_f_raw"]   = wu.get("wu_temp_f_raw")
+                    result["wu_age_min"]      = wu.get("wu_age_min")
+                    result["wu_source"]       = wu.get("wu_source")
+                    result["wu_data_source"]  = wu.get("wu_data_source")
             except Exception as wu_e:
                 print(f"[WU] Skipping WU fetch for {location}: {wu_e}")
 
@@ -907,8 +908,9 @@ async def compare_market(market: dict) -> Optional[dict]:
         # metar_temp = instantaneous METAR reading → Kalman diurnal model input.
         # NEVER conflate them: using wu_high as Kalman obs inflates T_max_post
         # by ~2°C at 10am and causes phantom spillover into adjacent buckets.
-        wu_temp_c     = station_data.get("wu_temp_c")       # spike-robust max
-        wu_temp_c_raw = station_data.get("wu_temp_c_raw")   # true max incl. spikes
+        wu_temp_c       = station_data.get("wu_temp_c")       # spike-robust max
+        wu_temp_c_raw   = station_data.get("wu_temp_c_raw")   # true max incl. spikes
+        wu_data_source  = station_data.get("wu_data_source")  # dailysummary | observations | ...
         if wu_temp_c_raw is None:
             wu_temp_c_raw = wu_temp_c
         metar_temp = station_data.get("obs_temp_c")
@@ -929,7 +931,15 @@ async def compare_market(market: dict) -> Optional[dict]:
         # check in consumers is a latent bug, not a feature.
         wu_definitive_result = None  # "dead" | None
 
-        if wu_temp_c is not None and in_latency_arb_zone:
+        # ── Data-source gate for wu_definitive ───────────────────────────
+        # Only the QC'd dailysummary path aligns with what Polymarket resolves.
+        # The observations-array path leaks single-hour sensor spikes that get
+        # filtered out of the final daily summary. In 2026-04-21→22 telemetry,
+        # every wu_definitive *loss* (Wellington x2, Madrid x1) came from
+        # the observations fallback. Refuse to go definitive on that path.
+        wu_source_trusted = (wu_data_source == "dailysummary")
+
+        if wu_temp_c is not None and in_latency_arb_zone and wu_source_trusted:
             lo_c_b = temp_bucket.get("lo_c")
             hi_c_b = temp_bucket.get("hi_c")
             # Only the "dead" case is physically certain:

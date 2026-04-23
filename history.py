@@ -102,6 +102,13 @@ def init_db():
             #   "wu_definitive"       — WU daily high outside bucket → model_prob forced to 0.01
             # Needed to measure whether the 2026-04-18 bleed-stop actually improved Brier.
             ("model_prob_source", "TEXT"),
+            # Snapshot of weather data that drove the decision. Previously
+            # everything was re-fetched at resolve-time, making it impossible
+            # to debug "why did we say dead?" after the fact.
+            ("wu_temp_c",         "REAL"),   # WU spike-filtered max at decision time
+            ("wu_temp_c_raw",     "REAL"),   # WU true max (includes single-hour spikes)
+            ("wu_data_source",    "TEXT"),   # dailysummary | observations | ...
+            ("obs_temp_c",        "REAL"),   # METAR instantaneous reading at decision time
         ]:
             try:
                 conn.execute(f"ALTER TABLE predictions ADD COLUMN {col} {coltype}")
@@ -159,6 +166,12 @@ def log_prediction(result: dict):
         time_remaining_hours = result.get("time_remaining_hours")
         in_latency = result.get("in_latency_arb_zone")
 
+        # Weather snapshot at decision time — used for post-hoc debugging
+        # ("why did we flag this dead?") instead of re-fetching at resolve-time.
+        def _f(v):
+            try: return float(v) if v is not None else None
+            except (ValueError, TypeError): return None
+
         conn.execute("""
             INSERT OR IGNORE INTO predictions
                 (condition_id, question, location, event_type, target_date,
@@ -166,8 +179,9 @@ def log_prediction(result: dict):
                  edge, action, predicted_at, predicted_date,
                  temp_bucket_json, market_url, market_subtype, temp_display,
                  days_ahead, obs_adjusted, time_remaining_hours, in_latency_arb_zone,
-                 model_prob_source)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 model_prob_source,
+                 wu_temp_c, wu_temp_c_raw, wu_data_source, obs_temp_c)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             condition_id,
             result.get("question", ""),
@@ -192,6 +206,10 @@ def log_prediction(result: dict):
             float(time_remaining_hours) if isinstance(time_remaining_hours, (int, float)) else None,
             1 if in_latency else (0 if in_latency is False else None),
             result.get("model_prob_source"),
+            _f(result.get("wu_temp_c")),
+            _f(result.get("wu_temp_c_raw")),
+            result.get("wu_data_source"),
+            _f(result.get("obs_temp_c")),
         ))
 
 
@@ -521,7 +539,8 @@ def get_all_predictions(days: int = 90, limit: int = 200) -> dict:
                    market_price, model_prob, consensus_prob, edge, action,
                    conviction, predicted_at, outcome, resolved_at,
                    temp_bucket_json, market_url, market_subtype, temp_display,
-                   model_prob_source
+                   model_prob_source,
+                   wu_temp_c, wu_temp_c_raw, wu_data_source, obs_temp_c
             FROM predictions
             WHERE predicted_at >= ?
             ORDER BY predicted_at DESC
