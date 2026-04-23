@@ -21,13 +21,32 @@ _SSL_CTX.check_hostname = False
 _SSL_CTX.verify_mode = ssl.CERT_NONE
 
 
+_DEFAULT_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+
 def _http_get_json(url: str, params: Optional[dict] = None, timeout: float = 10.0) -> Optional[dict]:
+    # CRITICAL: Polymarket CLOB (clob.polymarket.com) returns 403 Forbidden
+    # to any request without a browser-like User-Agent. Without this header,
+    # _resolve_from_polymarket silently returned None for EVERY market, the
+    # resolver fell through to Open-Meteo archive fallback, and 342/1075
+    # stored outcomes (32%) ended up wrong because archive uses city-center
+    # coords vs the ICAO station Polymarket resolves against. Audited
+    # 2026-04-24.
     full_url = url + "?" + urllib.parse.urlencode(params) if params else url
     try:
-        with urllib.request.urlopen(full_url, timeout=timeout, context=_SSL_CTX) as resp:
+        req = urllib.request.Request(full_url, headers={"User-Agent": _DEFAULT_UA})
+        with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as resp:
             if resp.status != 200:
                 return None
             return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        # Log non-403 errors so future auth/quota issues are visible.
+        if e.code != 404:
+            print(f"[HTTP] {e.code} fetching {full_url[:80]}")
+        return None
     except Exception:
         return None
 
