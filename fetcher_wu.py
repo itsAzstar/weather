@@ -14,6 +14,7 @@ observation data as JSON — no API key required.
 """
 
 import asyncio
+import html as _html
 import json
 import re
 import time
@@ -92,6 +93,37 @@ def _extract_temp_from_next_data(html: str) -> tuple[Optional[float], Optional[f
         r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
         html, re.DOTALL
     )
+    # ── Path 0 (2026-04 refresh): WU replaced __NEXT_DATA__ with `app-root-state`.
+    # The new schema stores QC'd daily highs at the top level of a numerically-keyed
+    # cache dict: data[<cache_id>].b.calendarDayTemperatureMax = [target_day_high, ...].
+    # Index [0] corresponds to the URL's target date (verified against the rendered
+    # HTML "High: XX°F" table — both return the same value for KDAL 2026-04-22 = 82).
+    # This path is the new "dailysummary" source — safe for wu_definitive gating.
+    m0 = re.search(
+        r'<script[^>]*id=["\']app-root-state["\'][^>]*>(.*?)</script>',
+        html, re.DOTALL
+    )
+    if m0:
+        try:
+            data0 = json.loads(_html.unescape(m0.group(1)))
+            for _k, _v in data0.items():
+                if not isinstance(_v, dict):
+                    continue
+                b = _v.get("b")
+                if not isinstance(b, dict):
+                    continue
+                cdtm = b.get("calendarDayTemperatureMax") or b.get("temperatureMax")
+                if isinstance(cdtm, list) and cdtm and cdtm[0] is not None:
+                    try:
+                        v = float(cdtm[0])
+                        # calendarDayTemperatureMax is already in °F on imperial pages
+                        return (v, v, "dailysummary")
+                    except (ValueError, TypeError):
+                        continue
+        except (json.JSONDecodeError, ValueError, AttributeError):
+            pass
+
+    # ── Legacy __NEXT_DATA__ path (pre-2026-04 WU, still present on some routes) ──
     if not m:
         return (None, None, None)
 
