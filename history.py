@@ -617,6 +617,25 @@ def auto_resolve_past_markets():
                 continue
 
             # ── Stage 2: Estimate from weather archive (temp only) ────
+            # 48-hour hold-off: archive fallback is city-center Open-Meteo,
+            # not the ICAO station Polymarket resolves against, so it's
+            # systematically wrong for west-coast and island markets at
+            # UTC midnight. The 2026-04-24 audit found 342/1075 stored
+            # outcomes (32%) were wrong; almost all were archive rows that
+            # CLOB later corrected to the opposite answer. Waiting 48h
+            # lets UMA finalize, CLOB truth lands, archive never fires on
+            # fresh markets. Markets older than 48h that STILL have no
+            # CLOB truth are genuinely stuck (UMA dispute / thin liquidity)
+            # and archive is the only option left.
+            if r["target_date"]:
+                try:
+                    td = date.fromisoformat(r["target_date"])
+                    age_days = (date.today() - td).days
+                    if age_days < 2:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+
             if (r["market_subtype"] == "temperature_bucket"
                     and r["temp_bucket_json"]
                     and r["target_date"]):
