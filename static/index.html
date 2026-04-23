@@ -732,6 +732,30 @@ main { display: grid; grid-template-columns: 1fr 290px; gap: 24px; padding: 24px
 .history-col-body.wrong   { border-color: var(--red); }
 .history-col-body.pending { border-color: var(--yellow); }
 
+/* Location groups inside history list. Use native <details> so each
+   city can be collapsed independently. Default is open per user spec. */
+.hist-group { border-bottom: 1px solid var(--border); }
+.hist-group:last-child { border-bottom: none; }
+.hist-group-sum {
+  cursor: pointer;
+  padding: 6px 10px;
+  background: rgba(255,255,255,0.02);
+  font-size: 12px;
+  user-select: none;
+  list-style: none;
+}
+.hist-group-sum::-webkit-details-marker { display: none; }
+.hist-group-sum::before {
+  content: '▾';
+  display: inline-block;
+  margin-right: 6px;
+  color: var(--dim2);
+  transition: transform 0.15s;
+}
+.hist-group:not([open]) .hist-group-sum::before { transform: rotate(-90deg); }
+.hist-group-sum:hover { background: rgba(255,255,255,0.04); }
+.hist-group-body > .card.row { border-left: 2px solid transparent; padding-left: 8px; }
+
 .history-row {
   display: flex;
   flex-direction: column;
@@ -2462,20 +2486,29 @@ function buildHistoryRow(r) {
   const srcLabel   = _SRC_LABEL[r.model_prob_source] || '—';
   const loc        = r.location || '—';
   const locShort   = loc.length > 14 ? loc.slice(0, 13) + '…' : loc;
-  // Resolved rows show "bucket → actual high". Actual high from WU at
-  // resolution time, stored in `resolved_high_f`. Color green if the
-  // actual landed inside the bucket (YES would win), else dim grey.
+  // Blue tag rule:
+  //   resolved + actual high known → show "🌡 <actual>°<unit>" in the
+  //       market's native unit. Green if YES would have won (actual ∈
+  //       bucket), red if NO would have won. This is the "what did the
+  //       day actually hit" number the user asked for.
+  //   resolved but no high data (WU fetch failed or legacy row) → show
+  //       bucket display in blue as before.
+  //   pending → show bucket display in blue as before.
   let tempInline = '';
   if (r.temp_display) {
+    const bucket = r.temp_bucket_json ? (()=>{try{return JSON.parse(r.temp_bucket_json);}catch(e){return null;}})() : null;
     if (r.resolved_high_f != null) {
-      const bucket = r.temp_bucket_json ? (()=>{try{return JSON.parse(r.temp_bucket_json);}catch(e){return null;}})() : null;
-      const hi = r.resolved_high_f;
-      // WU resolves to whole °F — compare with truncated bucket edges (°F unit).
+      const hiF = r.resolved_high_f;
+      const unit = (bucket && bucket.unit) || (r.temp_display && r.temp_display.includes('°C') ? 'C' : 'F');
+      const hiStr = unit === 'C'
+        ? ((hiF - 32) * 5 / 9).toFixed(1) + '°C'
+        : hiF.toFixed(0) + '°F';
+      // WU resolves to whole °F — compare truncated value with bucket °F bounds.
       const inBucket = bucket && bucket.lo != null && bucket.hi != null
-        ? (Math.floor(hi) >= bucket.lo && Math.floor(hi) <= bucket.hi)
+        ? (Math.floor(hiF) >= bucket.lo && Math.floor(hiF) <= bucket.hi)
         : null;
-      const hiColor = inBucket === true ? 'var(--green)' : inBucket === false ? 'var(--dim)' : 'var(--blue)';
-      tempInline = `<span class="rc-tempdisplay">🌡${r.temp_display} → <b style="color:${hiColor}">${hi.toFixed(0)}°F</b></span>`;
+      const hiColor = inBucket === true ? 'var(--green)' : inBucket === false ? 'var(--red)' : 'var(--blue)';
+      tempInline = `<span class="rc-tempdisplay" title="bucket was ${r.temp_display}">🌡 <b style="color:${hiColor}">${hiStr}</b></span>`;
     } else {
       tempInline = `<span class="rc-tempdisplay">🌡${r.temp_display}</span>`;
     }
@@ -2582,7 +2615,32 @@ function _renderHistList() {
     el.innerHTML = `<div class="history-empty" style="padding:24px 12px;color:var(--dim2)">${_histTab === 'correct' ? '尚無正確記錄' : '尚無失敗記錄'}</div>`;
     return;
   }
-  el.innerHTML = list.map(buildHistoryRow).join('');
+
+  // Group by location. Preserves current sort order within each group.
+  // <details open> is expanded by default per user spec — can be
+  // collapsed per-city by clicking the summary header.
+  const groups = new Map();
+  for (const r of list) {
+    const key = r.location || '—';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  }
+
+  const blocks = [];
+  for (const [city, rows] of groups) {
+    const correctN = rows.filter(r => r.verdict === 'correct').length;
+    const wrongN   = rows.filter(r => r.verdict === 'wrong').length;
+    const summaryBits = [];
+    if (correctN) summaryBits.push(`<span style="color:var(--green)">✓${correctN}</span>`);
+    if (wrongN)   summaryBits.push(`<span style="color:var(--red)">✗${wrongN}</span>`);
+    const summary = `<span style="color:var(--dim)">${rows.length}</span> ${summaryBits.join(' ')}`;
+    blocks.push(`
+<details class="hist-group" open>
+  <summary class="hist-group-sum">📍 <b>${city}</b> <span style="color:var(--dim2);font-size:11px;margin-left:8px">${summary}</span></summary>
+  <div class="hist-group-body">${rows.map(buildHistoryRow).join('')}</div>
+</details>`);
+  }
+  el.innerHTML = blocks.join('');
 }
 
 async function loadHistoryResolved() {
