@@ -384,7 +384,11 @@ def _resolve_from_polymarket(condition_id: str) -> Optional[bool]:
         if price_yes <= 0.01:
             return False  # NO won
         return None       # Still trading (not yet resolved)
-    except Exception:
+    except Exception as e:
+        # Schema-drift guard: Polymarket CLOB changing `tokens[].price` shape
+        # would silently stall resolution. Log instead of hiding.
+        print(f"[CLOB] Resolve parse failed for {condition_id[:10]}...: "
+              f"{type(e).__name__}: {e}")
         return None
 
 

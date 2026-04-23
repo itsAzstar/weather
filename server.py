@@ -145,6 +145,30 @@ async def _run_scan() -> list[dict]:
     # 3. 基本比較（Open-Meteo Ensemble — uses cached weather）
     results = await compare_all_markets(markets)
 
+    # ── WU parser health telemetry ────────────────────────────────────────
+    # Silent parser regressions (WU changing their page structure) killed
+    # the wu_definitive signal for 2 days in 2026-04 before detection.
+    # Every scan now logs the distribution of wu_data_source values so
+    # schema drift surfaces as a visible warning instead of a silent 0.
+    from collections import Counter as _Counter
+    _wu_src = _Counter()
+    _wu_hit = 0
+    for _r in results:
+        ds = _r.get("wu_data_source")
+        if _r.get("wu_temp_c") is not None:
+            _wu_hit += 1
+            _wu_src[ds or "null"] += 1
+    if _wu_hit >= 3:
+        _trusted = _wu_src.get("dailysummary", 0)
+        _ratio   = _trusted / _wu_hit
+        tag = "OK" if _ratio >= 0.5 else "⚠ DEGRADED"
+        print(f"[WU Health] {tag}: {_trusted}/{_wu_hit} dailysummary "
+              f"({_ratio:.0%}) — breakdown: {dict(_wu_src)}")
+        if _ratio < 0.5:
+            print("[WU Health] ⚠ wu_definitive signal disabled for most "
+                  "markets. Check fetcher_wu._extract_temp_from_next_data — "
+                  "WU page structure may have changed again.")
+
     # 4. 三模型共識（並行處理，只對有機會/有 edge 的市場）
     def _enrich_one(r: dict) -> dict:
         if r.get("is_opportunity"):
