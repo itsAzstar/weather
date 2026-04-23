@@ -222,23 +222,30 @@ async def _run_scan() -> list[dict]:
                         except (ValueError, TypeError):
                             pass
 
-                    # Kelly 建議注額：使用已扣除 Spread 的 exec_edge（在 comparator 計算）
-                    # exec_edge = paper_edge - bid/ask half-spread (dynamic, by price level)
-                    exec_edge = abs(r.get("exec_edge") or r.get("edge") or 0)
-                    conv_factor = {"high": 1.0, "medium": 0.6, "low": 0.3}.get(
-                        cons.get("conviction", "low"), 0.3
-                    )
-                    kelly_size = round(exec_edge * conv_factor * 10, 2)
-                    # wu_definitive 訊號在真實世界勝率 10/10（扣除 Houston spike bug），
-                    # Brier 0.089 — 是目前最可靠訊號。給 1.5× 加碼、cap 拉到 $15。
-                    if r.get("model_prob_source") == "wu_definitive":
-                        kelly_size = round(kelly_size * 1.5, 2)
-                        r["kelly_boost"] = "wu_definitive_1.5x"
-                        r["kelly_bet"]   = min(kelly_size, 15.0)
-                    else:
-                        r["kelly_bet"]   = min(kelly_size, 10.0)
                 except Exception:
                     r["consensus"] = None
+
+            # ── Kelly sizing (always runs; does NOT depend on consensus fetch) ─
+            # Previous bug: Kelly was nested inside the consensus try-block, so
+            # any urllib timeout in get_consensus() bailed past Kelly entirely,
+            # leaving kelly_bet=None on every wu_definitive row in production.
+            if r.get("is_opportunity"):
+                exec_edge = abs(r.get("exec_edge") or r.get("edge") or 0)
+                cons_obj = r.get("consensus") or {}
+                conv_factor = {"high": 1.0, "medium": 0.6, "low": 0.3}.get(
+                    cons_obj.get("conviction", "low"), 0.3
+                )
+                # wu_definitive is a physical certainty, not a model guess —
+                # the lack of a consensus response doesn't diminish conviction.
+                if r.get("model_prob_source") == "wu_definitive":
+                    conv_factor = 1.0
+                kelly_size = round(exec_edge * conv_factor * 10, 2)
+                if r.get("model_prob_source") == "wu_definitive":
+                    kelly_size = round(kelly_size * 1.5, 2)
+                    r["kelly_boost"] = "wu_definitive_1.5x"
+                    r["kelly_bet"]   = min(kelly_size, 15.0)
+                else:
+                    r["kelly_bet"]   = min(kelly_size, 10.0)
             try:
                 log_prediction(r)
             except Exception:
