@@ -293,6 +293,29 @@ def _kalman_state_reset(key: tuple) -> None:
         _kalman_state_ts.pop(key, None)
 
 
+def _kalman_state_sweep() -> int:
+    """
+    Active TTL sweep — deletes every entry older than _KALMAN_STATE_MAX_AGE_S.
+
+    _kalman_state_get() only purges on read, so keys for markets that have
+    resolved and are never scanned again linger forever. On a Railway
+    container with weeks of uptime that's hundreds of stale entries per
+    day → slow memory creep + a noisy regime-shift baseline.
+
+    Called from compare_all_markets() at scan start, next to
+    clear_weather_cache(). Returns count of purged entries for log.
+    """
+    import time
+    now = time.time()
+    with _kalman_state_lock:
+        stale = [k for k, ts in _kalman_state_ts.items()
+                 if now - ts > _KALMAN_STATE_MAX_AGE_S]
+        for k in stale:
+            _kalman_state.pop(k, None)
+            _kalman_state_ts.pop(k, None)
+    return len(stale)
+
+
 # ── Weather result cache (persistent across scan runs, 2-hour TTL) ────────────
 # Stores (result, timestamp) so weather isn't re-fetched too often.
 # Stale-while-revalidate: if refetch fails (e.g. rate limit), keep using the
@@ -1273,6 +1296,11 @@ async def compare_all_markets(markets: list[dict]) -> list[dict]:
     I/O callbacks and enforce per-host connection limits cleanly.
     """
     clear_weather_cache()   # evict stale entries before a fresh scan run
+    _kalman_purged = _kalman_state_sweep()
+    if _kalman_purged > 0:
+        print(f"[Kalman] Purged {_kalman_purged} stale state entries "
+              f"(>{_KALMAN_STATE_MAX_AGE_S//3600}h old). "
+              f"Live entries: {len(_kalman_state)}")
     results = []
     skipped = 0
 
