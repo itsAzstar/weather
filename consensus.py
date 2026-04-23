@@ -205,7 +205,14 @@ def _model_prob_from_day(day: dict, event_type: str, threshold: Optional[dict], 
 
     elif event_type == "temperature":
         if threshold is None:
-            return 0.50
+            # Missing threshold = parser failed to extract the market's
+            # temperature cutoff. Previously we returned 0.50 per model,
+            # which made consensus = 0.50 across all 5 models and silently
+            # dragged every "unparsed-threshold" temperature market toward
+            # a neutral lie. None = "this model has no opinion" — consensus
+            # then averages only the models that do, and conviction drops
+            # to "low" via model_count, which correctly signals mistrust.
+            return None
         # Defensive: if threshold carries BOTH a lo and hi bound, this is
         # really a bucket market that was mislabeled as "temperature".
         # Route to bucket NCDF logic instead of exceed logic — the latter
