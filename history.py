@@ -756,35 +756,49 @@ def get_all_predictions(days: int = 90, limit: int = 200) -> dict:
             LIMIT ?
         """, (since, limit)).fetchall()
 
-    correct, wrong, pending = [], [], []
+    correct, wrong, pending, skipped = [], [], [], []
     for r in rows:
         d = dict(r)
-        action  = d.get("action", "")
+        action  = (d.get("action") or "").upper()
         outcome = d.get("outcome")
 
         if outcome is None:
             d["verdict"] = "pending"
-            pending.append(d)
-        elif (action == "BUY YES" and outcome == 1) or (action == "BUY NO" and outcome == 0):
+            pending.append(d); continue
+
+        # HOLD / SKIP / blank action = we didn't trade. Can't be right or
+        # wrong in a P&L sense; only BUY YES / BUY NO count. Before this
+        # fix, every HOLD row landed in "wrong" and buried the real trade
+        # errors under thousands of no-ops (928 "wrong" was mostly noise).
+        is_buy_yes = action == "BUY YES"
+        is_buy_no  = action == "BUY NO"
+        if not (is_buy_yes or is_buy_no):
+            d["verdict"] = "skipped"
+            skipped.append(d); continue
+
+        if (is_buy_yes and outcome == 1) or (is_buy_no and outcome == 0):
             d["verdict"] = "correct"
             correct.append(d)
         else:
             d["verdict"] = "wrong"
             wrong.append(d)
 
-    total_settled = len(correct) + len(wrong)
-    success_rate = round(len(correct) / total_settled, 4) if total_settled > 0 else None
-    failure_rate = round(len(wrong)   / total_settled, 4) if total_settled > 0 else None
+    total_traded = len(correct) + len(wrong)
+    success_rate = round(len(correct) / total_traded, 4) if total_traded > 0 else None
+    failure_rate = round(len(wrong)   / total_traded, 4) if total_traded > 0 else None
 
     return {
         "correct":       correct,
         "wrong":         wrong,
         "pending":       pending,
-        "total_settled": total_settled,
-        "total":         len(correct) + len(wrong) + len(pending),
+        "skipped":       skipped,
+        "total_settled": total_traded + len(skipped),
+        "total_traded":  total_traded,
+        "total":         total_traded + len(skipped) + len(pending),
         "success_count": len(correct),
         "failure_count": len(wrong),
         "pending_count": len(pending),
+        "skipped_count": len(skipped),
         "success_rate":  success_rate,
         "failure_rate":  failure_rate,
         "days_window":   days,
@@ -817,16 +831,17 @@ def get_resolved_split(days: int = 90) -> dict:
 
     for r in rows:
         d = dict(r)
-        action  = d.get("action", "")
+        action  = (d.get("action") or "").upper()
         outcome = d.get("outcome")
-
-        if action == "BUY YES" and outcome == 1:
+        if outcome is None:
+            continue
+        # Skip HOLD/SKIP — no trade means neither correct nor wrong.
+        if action not in ("BUY YES", "BUY NO"):
+            continue
+        if (action == "BUY YES" and outcome == 1) or (action == "BUY NO" and outcome == 0):
             d["verdict"] = "correct"
             correct.append(d)
-        elif action == "BUY NO" and outcome == 0:
-            d["verdict"] = "correct"
-            correct.append(d)
-        elif outcome is not None:
+        else:
             d["verdict"] = "wrong"
             wrong.append(d)
 
