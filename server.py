@@ -525,6 +525,53 @@ async def api_refresh():
     })
 
 
+@app.get("/api/debug/resolve")
+async def api_debug_resolve(cid: str = "", location: str = "", target_date: str = ""):
+    """
+    Diagnostic endpoint: hit CLOB + WU directly from Railway, return raw results.
+    Lets us see whether Railway's outbound HTTP to Polymarket/WU is working,
+    without guessing from downstream state.
+    """
+    from history import (_resolve_from_polymarket, _fetch_resolved_high_f,
+                         _http_get_json)
+    out = {"cid": cid, "location": location, "target_date": target_date}
+    try:
+        if cid:
+            # Raw CLOB hit so we can see what Railway gets back
+            raw = await asyncio.to_thread(
+                _http_get_json,
+                f"https://clob.polymarket.com/markets/{cid}", None, 10.0)
+            out["clob_raw"] = {
+                "got_response": raw is not None,
+                "closed": (raw or {}).get("closed"),
+                "tokens": [
+                    {"outcome": t.get("outcome"), "price": t.get("price"),
+                     "winner": t.get("winner")}
+                    for t in (raw or {}).get("tokens", [])
+                ] if raw else None,
+            }
+            out["resolve_result"] = await asyncio.to_thread(
+                _resolve_from_polymarket, cid)
+        if location and target_date:
+            out["high_f"] = await asyncio.to_thread(
+                _fetch_resolved_high_f, location, target_date)
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {e}"
+    return JSONResponse(out)
+
+
+@app.post("/api/debug/force_resolve")
+async def api_debug_force_resolve():
+    """Run the full auto_resolve sweep inline, return counts."""
+    from history import auto_resolve_past_markets
+    try:
+        n = await asyncio.to_thread(auto_resolve_past_markets)
+        return JSONResponse({"resolved_count": n, "ok": True})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"},
+                            status_code=500)
+
+
 # Startup logic moved to _lifespan context manager (defined near top of file).
 
 

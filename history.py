@@ -275,9 +275,16 @@ def record_outcome(condition_id: str, outcome: bool, source: str = "manual",
         if cur is None:
             return
         existing_pri = _SOURCE_PRIORITY.get(cur["resolution_source"] or "", 0)
-        # Only overwrite when new source is strictly higher priority,
-        # OR when no outcome is stored yet.
-        if cur["outcome"] is not None and new_pri <= existing_pri:
+        # Overwrite rules:
+        #   1. higher-priority source → always overwrite
+        #   2. no outcome stored yet → write
+        #   3. SAME source + outcome flip → update (CLOB can change)
+        #   4. SAME source + backfilling high_f → allow (COALESCE protects it)
+        # Previously this guard blocked same-source re-writes entirely, which
+        # meant every one of the 455 polymarket-sourced rows could NEVER get
+        # its resolved_high_f populated on a sweep. That's why high_f stayed
+        # at 0/1744 no matter how many times we re-ran the resolver.
+        if cur["outcome"] is not None and new_pri < existing_pri:
             return
         conn.execute("""
             UPDATE predictions
