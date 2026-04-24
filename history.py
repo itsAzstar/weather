@@ -568,9 +568,24 @@ def _fetch_resolved_high_f(location: str, target_date_str: str) -> Optional[floa
         target_d = date.fromisoformat(target_date_str)
         date_str = f"{target_d.year}-{target_d.month}-{target_d.day}"
         url = f"https://www.wunderground.com/history/daily/{icao}/date/{date_str}"
-        req = urllib.request.Request(url, headers=WU_HEADERS)
+        # WU responds with Content-Encoding: gzip when Accept-Encoding includes it.
+        # urllib does NOT auto-decompress (aiohttp does, which is why the async path
+        # in fetcher_wu.py never hit this). Before this fix every urllib call to WU
+        # returned gzipped bytes decoded as utf-8 → garbage → parser returned None
+        # → resolved_high_f was ALWAYS null. Strip gzip from the Accept-Encoding
+        # header we send so the server returns plaintext.
+        headers = dict(WU_HEADERS); headers["Accept-Encoding"] = "identity"
+        req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
-            html = resp.read().decode("utf-8", errors="replace")
+            raw = resp.read()
+            enc = (resp.headers.get("Content-Encoding") or "").lower()
+            if enc == "gzip":
+                import gzip
+                raw = gzip.decompress(raw)
+            elif enc == "deflate":
+                import zlib
+                raw = zlib.decompress(raw)
+            html = raw.decode("utf-8", errors="replace")
         robust, raw, source = _extract_temp_from_next_data(html)
         # Prefer robust (spike-filtered). For dailysummary source they're
         # identical. For observations we still trust robust — single-hour
