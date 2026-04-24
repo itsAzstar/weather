@@ -749,6 +749,23 @@ async def fetch_all_weather_markets(use_mock_fallback: bool = True) -> list[dict
 
     live_count = sum(1 for m in combined if m.get("source") != "mock")
 
+    # ── Schema-drift guard ───────────────────────────────────────────────
+    # Gamma-events is the main source (~95% of weather markets). If it
+    # returns 0 we're almost certainly looking at a Polymarket API change,
+    # not a quiet market day. Shout loudly so it doesn't pass as normal.
+    if len(events) == 0:
+        print("[Market Health] ⚠ Gamma-events returned 0 weather markets. "
+              "Polymarket /events API may have changed shape or the "
+              '"Highest temperature in" event pattern was renamed. Check '
+              "fetcher_polymarket.fetch_gamma_weather_events.")
+    elif len(events) < 20:
+        print(f"[Market Health] ⚠ Gamma-events low: {len(events)} "
+              "(typical: 80-200). Possible partial schema drift.")
+
+    if len(combined) < 50 and live_count > 0:
+        print(f"[Market Health] ⚠ Only {len(combined)} total markets loaded "
+              "(historically 100-400). Investigate if this persists.")
+
     if not live_count and use_mock_fallback:
         print("\n[INFO] No live weather markets found — using mock data to demonstrate the pipeline.\n")
         combined = MOCK_WEATHER_MARKETS[:]

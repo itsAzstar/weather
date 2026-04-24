@@ -9,3 +9,5 @@ __pycache__/
 .env
 venv/
 .venv/
+mismatches.json
+audit_resolved.py

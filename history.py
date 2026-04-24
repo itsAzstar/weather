@@ -426,24 +426,46 @@ def _resolve_from_polymarket(condition_id: str) -> Optional[bool]:
     if not data:
         return None
     try:
-        tokens = data.get("tokens", [])
+        tokens = data.get("tokens", []) or []
+        # Primary signal: explicit winner flag (works for any outcome naming).
+        # Polymarket sets `winner: true` on the winning token once resolved.
+        closed = bool(data.get("closed"))
+        winners = []
+        for idx, token in enumerate(tokens):
+            if token.get("winner") is True:
+                winners.append((idx, (token.get("outcome") or "").lower()))
+        if winners:
+            idx, name = winners[0]
+            # Convention: YES is first token (index 0) or named yes/rain/above/over/higher
+            yes_names = {"yes", "above", "over", "higher", "rain", "hit", "true"}
+            if name in yes_names or idx == 0:
+                return True
+            return False
+
+        # Fallback: price-based. Scan all tokens, pick whichever looks like YES.
         price_yes = None
-        for token in tokens:
+        yes_names = {"yes", "above", "over", "higher", "rain", "hit", "true"}
+        for idx, token in enumerate(tokens):
             outcome = (token.get("outcome") or "").lower()
             try:
                 p = float(token.get("price", -1))
             except (ValueError, TypeError):
                 continue
-            if outcome == "yes":
+            if outcome in yes_names or (price_yes is None and idx == 0 and not outcome):
                 price_yes = p
 
         if price_yes is None:
             return None
+        # Only trust price-based resolution if market is actually closed.
+        if not closed:
+            if price_yes >= 0.995: return True
+            if price_yes <= 0.005: return False
+            return None
         if price_yes >= 0.99:
-            return True   # YES won
+            return True
         if price_yes <= 0.01:
-            return False  # NO won
-        return None       # Still trading (not yet resolved)
+            return False
+        return None
     except Exception as e:
         # Schema-drift guard: Polymarket CLOB changing `tokens[].price` shape
         # would silently stall resolution. Log instead of hiding.
@@ -469,14 +491,23 @@ def _resolve_from_weather_archive(condition_id: str, location: str,
         bucket = json.loads(temp_bucket_json or "{}")
         if not bucket:
             return None
-        # KNOWN LIMITATION: resolve_location() returns city-center coords, but
-        # Polymarket resolves against the Wunderground ICAO station high (often
-        # an airport 5-20 km from downtown). For cities like Austin (KAUS 10 km
-        # south) or Dallas (KDAL downtown vs DFW airport) this can introduce a
-        # 0.5-2°C bias in archive-fallback resolutions. Stage 1 (Polymarket CLOB)
-        # is the truth-source and gets tried first, so this only affects stuck
-        # pending rows where CLOB hasn't settled. TODO: add ICAO→coords table
-        # in fetcher_stations.py and prefer station coords when icao is known.
+
+        # ── Preferred: WU ICAO station high (same source as Polymarket) ───
+        # Archive fallback previously used Open-Meteo city-center coords,
+        # which drifts 0.5-2°C from the actual resolution point (airport
+        # ICAO). When CLOB hasn't settled yet, at least match Polymarket's
+        # data source so we don't manufacture disagreement.
+        station_high_f = _fetch_resolved_high_f(location or "", target_date_str)
+        if station_high_f is not None:
+            actual_c_from_station = (station_high_f - 32.0) * 5.0 / 9.0
+            lo_c_s = bucket.get("lo_c"); hi_c_s = bucket.get("hi_c")
+            if lo_c_s is not None and hi_c_s is not None:
+                return lo_c_s <= actual_c_from_station <= hi_c_s
+            if lo_c_s is not None:
+                return actual_c_from_station >= lo_c_s
+            if hi_c_s is not None:
+                return actual_c_from_station <= hi_c_s
+
         coords = resolve_location(location)
         if not coords:
             return None
